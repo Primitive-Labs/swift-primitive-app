@@ -15,7 +15,7 @@ let package = Package(
     ],
     dependencies: [
         // During development: local path to the client library
-        .package(url: "https://github.com/Primitive-Labs/JsBaoClient.git", branch: "main"),
+        .package(url: "https://github.com/Primitive-Labs/swift-client.git", branch: "main"),
     ],
     targets: [
         .target(
