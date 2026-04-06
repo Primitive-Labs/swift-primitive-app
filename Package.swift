@@ -21,7 +21,7 @@ let package = Package(
         .target(
             name: "PrimitiveApp",
             dependencies: [
-                .product(name: "JsBaoClient", package: "JsBaoClient"),
+                .product(name: "JsBaoClient", package: "swift-client"),
             ],
             path: "Sources/PrimitiveApp"
         ),
