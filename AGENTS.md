@@ -1,0 +1,13 @@
+# Swift Primitive App (Template Package)
+
+This is a Swift Package (SPM) providing the reusable `PrimitiveApp` library. New files are auto-discovered by SPM — no project file changes needed.
+
+## Build
+
+```sh
+swift build
+```
+
+## Swift Client
+
+The native Swift client lives at `~/primitive/js-bao-wss-swift/swift-client/`. It mirrors the JS `js-bao-wss-client` API using native URLSession (HTTP), URLSessionWebSocketTask (WS), and YSwift/Yrs (CRDTs). No JavaScript bridge.

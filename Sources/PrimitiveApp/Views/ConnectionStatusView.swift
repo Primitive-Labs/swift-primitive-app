@@ -1,0 +1,160 @@
+import SwiftUI
+
+/// Toolbar-ready view showing connection status dot, status text, and user name.
+public struct ConnectionStatusView: View {
+    @EnvironmentObject var appState: PrimitiveAppState
+
+    public init() {}
+
+    public var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(appState.statusColor)
+                .frame(width: 8, height: 8)
+            Text(appState.connectionStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !appState.userName.isEmpty {
+                Text("\u{00B7}").foregroundStyle(.secondary)
+                Text(appState.userName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Full-screen loading view with a spinner and status message.
+public struct PrimitiveLoadingView: View {
+    let message: String
+
+    public init(_ message: String = "Loading...") {
+        self.message = message
+    }
+
+    public var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Gates content behind authentication + connection.
+///
+/// Shows login UI when unauthenticated, loading state while connecting,
+/// and the provided content once connected.
+public struct AuthGateView<Content: View>: View {
+    @EnvironmentObject var appState: PrimitiveAppState
+    @ObservedObject var authManager: PrimitiveAuthManager
+    let appName: String
+    let content: () -> Content
+
+    public init(appName: String = "Primitive", authManager: PrimitiveAuthManager, @ViewBuilder content: @escaping () -> Content) {
+        self.appName = appName
+        self.authManager = authManager
+        self.content = content
+    }
+
+    /// Track whether we've ever connected (to distinguish first connect from offline)
+    @State private var hasConnectedOnce = false
+
+    public var body: some View {
+        ZStack {
+            if !appState.isInitialized {
+                PrimitiveLoadingView("Initializing...")
+            } else if !authManager.isAuthenticated && appState.client != nil {
+                PrimitiveLoginView(appName: appName, authManager: authManager)
+            } else if appState.isConnected || hasConnectedOnce {
+                // Show content when connected OR when we were connected before (offline mode)
+                content()
+            } else if appState.errorMessage != nil {
+                errorView
+            } else {
+                PrimitiveLoadingView("Connecting...")
+            }
+        }
+        .onChange(of: authManager.isAuthenticated) { _, authenticated in
+            if authenticated && !appState.isConnected {
+                Task { await appState.connectClient() }
+            }
+        }
+        .onChange(of: appState.isConnected) { _, connected in
+            if connected { hasConnectedOnce = true }
+        }
+    }
+
+    private var errorView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 36))
+                .foregroundStyle(.orange)
+            Text(appState.errorMessage ?? "")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Button("Retry") {
+                appState.errorMessage = nil
+                Task { await appState.initialize() }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Sidebar view showing the list of documents with selection support.
+public struct DocumentSidebarView: View {
+    @EnvironmentObject var appState: PrimitiveAppState
+
+    public init() {}
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(appState.credentialSource)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer()
+                if appState.isLoadingDocs {
+                    ProgressView().scaleEffect(0.6)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+
+            Divider()
+
+            if appState.documents.isEmpty && !appState.isLoadingDocs {
+                VStack(spacing: 8) {
+                    Text("No documents").foregroundStyle(.secondary)
+                    Text("Create one in the web app")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(appState.documents, selection: $appState.selectedDocId) { doc in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(doc.title)
+                            .fontWeight(appState.selectedDocId == doc.id ? .semibold : .regular)
+                        Text(doc.id.prefix(16) + "...")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .monospaced()
+                    }
+                    .tag(doc.id)
+                    .padding(.vertical, 2)
+                }
+                .onChange(of: appState.selectedDocId) { _, newValue in
+                    if let docId = newValue {
+                        appState.selectDocument(docId)
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 220)
+    }
+}
