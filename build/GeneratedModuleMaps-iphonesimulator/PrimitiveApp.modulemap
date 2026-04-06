@@ -1,4 +1,0 @@
-module PrimitiveApp {
-header "PrimitiveApp-Swift.h"
-export *
-}
