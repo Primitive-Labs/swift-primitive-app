@@ -72,6 +72,17 @@ open class PrimitiveAppState: ObservableObject {
     /// Loads app config from `primitive.json`, creates a JsBaoClient without a token,
     /// and presents the login screen. After the user authenticates, `AuthGateView`
     /// automatically calls `connectClient()`.
+    ///
+    /// **Dev-mode CLI auth bypass**: when `loadPrimitiveCliCredentials`
+    /// returns a token (either from a bundled `dev-credentials.json` baked
+    /// in by `run-ios.sh`, or from `~/.primitive/credentials.json` directly
+    /// when `USE_CLI_AUTH=true` is set in `.env.local` for `./run.sh`), it
+    /// gets passed straight into `JsBaoClientOptions.token`. The client is
+    /// then already authenticated, the auth manager picks that up in
+    /// `attach(to:)`, the login UI is skipped entirely, and
+    /// `connectClient()` is invoked automatically here (since
+    /// `AuthGateView`'s `.onChange(of: isAuthenticated)` only fires on
+    /// transitions, not on initial state).
     public func initialize() async {
         logger.info("Initializing...")
 
@@ -90,12 +101,21 @@ open class PrimitiveAppState: ObservableObject {
 
         guard let config = appConfig else { return }
 
+        // Dev-mode CLI auth bypass. Gating lives inside the helper:
+        // bundled credentials are always honored (they were placed there
+        // by an explicit build-time opt-in), and ~/.primitive/credentials
+        // is only consulted on macOS when `.env.local` says so.
+        let cliCreds = loadPrimitiveCliCredentials(searchPaths: configSearchPaths())
+        if let cli = cliCreds {
+            logger.info("CLI auth bypass active for \(cli.email ?? "<unknown>")")
+        }
+
         // Create client -- persisted JWT will be loaded automatically if available
         let client = JsBaoClient(options: JsBaoClientOptions(
             apiUrl: config.serverUrl,
             wsUrl: config.wsUrl,
             appId: config.appId,
-            token: nil,
+            token: cliCreds?.accessToken,
             offline: false,
             globalAdminAppId: "global-admin-app",
             logLevel: .info,
@@ -107,7 +127,23 @@ open class PrimitiveAppState: ObservableObject {
 
         setupEventSubscriptions(client)
         authManager.attach(to: client)
+
+        // Pre-fill displayed user info from CLI creds so the profile/header
+        // shows something useful before the /me round-trip lands.
+        if let cli = cliCreds {
+            if let name = cli.name { userName = name }
+            if let email = cli.email { userEmail = email }
+        }
+
         isInitialized = true
+
+        // CLI bypass: connect now. The auth manager already saw the
+        // bootstrapped token in attach() and flipped isAuthenticated true,
+        // but AuthGateView's connect-on-auth onChange only fires on
+        // transitions, so we have to kick the connect ourselves.
+        if cliCreds != nil && authManager.isAuthenticated {
+            await connectClient()
+        }
     }
 
     /// Connect the client (called after auth succeeds or with a dev token).
@@ -214,6 +250,13 @@ open class PrimitiveAppState: ObservableObject {
                     permission: doc["permission"] as? String ?? "?"
                 )
             }
+        } catch is CancellationError {
+            // Task was cancelled — normal SwiftUI lifecycle when a view with
+            // `.task { fetchDocuments() }` disappears mid-fetch. Not a real
+            // error; the next appearance will refetch.
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Same case, but the cancellation surfaced through URLSession
+            // before reaching the Swift task system.
         } catch {
             errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
         }
@@ -252,7 +295,7 @@ open class PrimitiveAppState: ObservableObject {
         }
     }
 
-    /// Called after a document is successfully opened. Override to set up collections.
+    /// Called after a document is successfully opened. Override to set up BaoModels.
     open func onDocumentOpened(documentId: String) {}
 
     // MARK: - Sync Messages

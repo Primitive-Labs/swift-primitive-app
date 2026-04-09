@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// A ready-made login view supporting Google OAuth, magic link, and OTP.
 ///
@@ -68,6 +71,35 @@ public struct PrimitiveLoginView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Tap anywhere outside the text fields to clear focus.
+        // `.contentShape` makes the Spacer regions hit-testable; without it
+        // taps in the empty space above/below the form do nothing.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            dismissKeyboard()
+        }
+        // ESC key on macOS clears focus from the active text field. The
+        // modifier is *unavailable* on iOS (not just inert), so guard it.
+        #if os(macOS)
+        .onExitCommand { dismissKeyboard() }
+        #endif
+    }
+
+    /// Resigns first responder on whichever platform we're running on.
+    /// iOS: route resignFirstResponder through UIApplication so it walks the
+    /// responder chain. macOS: tell the key window to drop its first
+    /// responder, which clears focus from any NSTextField hosted by SwiftUI.
+    private func dismissKeyboard() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+        #elseif canImport(AppKit)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        #endif
     }
 
     // MARK: - Initial Login
@@ -129,7 +161,7 @@ public struct PrimitiveLoginView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button("Back to login") {
-                authManager.loginState = .initial
+                authManager.reset()
             }
             .font(.caption)
             .padding(.top, 8)
@@ -139,14 +171,15 @@ public struct PrimitiveLoginView: View {
     // MARK: - OTP Entry
 
     private var otpEntryView: some View {
-        VStack(spacing: 12) {
-            Text("Enter the 6-digit code")
+        let otpLength = PrimitiveAuthManager.otpLength
+        return VStack(spacing: 12) {
+            Text("Enter the \(otpLength)-digit code")
                 .font(.headline)
             Text("Sent to **\(email)**")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            TextField("000000", text: $otpCode)
+            TextField(String(repeating: "0", count: otpLength), text: $otpCode)
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.center)
                 .font(.system(.title2, design: .monospaced))
@@ -158,10 +191,10 @@ public struct PrimitiveLoginView: View {
                 Task { await authManager.verifyOtp(email: email, code: otpCode) }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(otpCode.count < 6)
+            .disabled(otpCode.count < otpLength)
 
             Button("Back to login") {
-                authManager.loginState = .initial
+                authManager.reset()
                 otpCode = ""
             }
             .font(.caption)

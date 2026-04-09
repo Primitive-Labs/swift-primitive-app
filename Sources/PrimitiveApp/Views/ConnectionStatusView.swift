@@ -11,6 +11,12 @@ public struct ConnectionStatusView: View {
             Circle()
                 .fill(appState.statusColor)
                 .frame(width: 8, height: 8)
+                // VoiceOver: the dot conveys connection state visually, so
+                // expose the same info to assistive tech instead of leaving
+                // a bare circle. The text label next to it carries the same
+                // information visually but isn't always read in toolbar
+                // placements, so we label the dot too and merge the row.
+                .accessibilityLabel("Connection status: \(appState.connectionStatus)")
             Text(appState.connectionStatus)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -21,6 +27,7 @@ public struct ConnectionStatusView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 }
 

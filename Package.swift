@@ -25,5 +25,10 @@ let package = Package(
             ],
             path: "Sources/PrimitiveApp"
         ),
+        .testTarget(
+            name: "PrimitiveAppTests",
+            dependencies: ["PrimitiveApp"],
+            path: "Tests/PrimitiveAppTests"
+        ),
     ]
 )

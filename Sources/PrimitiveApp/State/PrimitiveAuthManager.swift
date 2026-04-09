@@ -13,6 +13,11 @@ private let logger = Logger(subsystem: "com.primitivelabs.PrimitiveApp", categor
 @MainActor
 public class PrimitiveAuthManager: NSObject, ObservableObject {
 
+    /// Number of digits in the OTP code emailed to users. Surfaced so the
+    /// login view can use it both for placeholder text and the verify-button
+    /// disabled gate without hardcoding `6` in two places.
+    public static let otpLength = 6
+
     // MARK: - Published State
 
     @Published public var isAuthenticated = false
@@ -215,6 +220,16 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             isAuthenticating = false
             loginState = .enteringOtp
         }
+    }
+
+    /// Reset the login UI back to the initial screen and clear any pending
+    /// auth error. Use this from "Back to login" buttons and similar
+    /// affordances rather than mutating `loginState` directly from a View —
+    /// it keeps the state-clearing logic in one place and means the View
+    /// doesn't have to know about the in-flight `authError` field.
+    public func reset() {
+        loginState = .initial
+        authError = nil
     }
 
     // MARK: - Logout
