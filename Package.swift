@@ -19,7 +19,7 @@ let package = Package(
         // back to `../../js-bao-wss/swift-client` once codegen lands
         // on main. See `TODO_REVERT_SWIFT_CLIENT_PATH.md` at the repo
         // root for the full revert checklist.
-        .package(name: "JsBaoClient", path: "../../js-bao-wss/swift-client"),
+        .package(url: "https://github.com/Primitive-Labs/swift-client.git", branch: "main"),
     ],
     targets: [
         .target(
