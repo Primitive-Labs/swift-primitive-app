@@ -1,0 +1,283 @@
+  <!-- ========== MEMORY SQL ========== -->
+  <!-- The in-memory `:memory:` SQLite that backs `model.query()` —
+       NOT the persistence file (that's the SQLite (disk) tab). One
+       table per model, kept in sync with the Y.Doc via the update
+       observer. See docs/data-flow.md for the full layer breakdown. -->
+  <section x-show="activeTab === 'memdb'" class="panel flex flex-col min-h-0" style="height: 100%;">
+    <div class="panel-head">
+      Memory SQL
+      <span class="mono text-[11px]" style="color: var(--muted)">in-memory query engine — projection of the Y.Doc</span>
+      <span class="flex-1"></span>
+      <span class="text-xs flex items-center gap-1" style="color: var(--muted)">
+        <span class="dot" :class="memdbPolling ? 'dot-g' : 'dot-r'"></span>
+        <span x-text="memdbPolling ? 'live (2s)' : 'paused'"></span>
+      </span>
+      <button class="btn btn-sm" @click="memdbPolling = !memdbPolling">
+        <span x-text="memdbPolling ? 'pause' : 'resume'"></span>
+      </button>
+      <button class="btn btn-sm" @click="reloadMemDB()">refresh</button>
+    </div>
+
+    <!-- Per-model picker. Each DynamicModel has its own engine, so
+         we list them flat with the doc id below the model name. -->
+    <div class="flex items-center gap-1 px-2 py-1.5 border-b scroll" style="border-color: var(--border); background: var(--panel-2);">
+      <template x-for="m in memdbModels" :key="m.model + ':' + m.documentId">
+        <button class="tab" :class="{ active: activeMemDBKey === (m.model + ':' + m.documentId) }"
+                @click="selectMemDBModel(m)">
+          <span x-text="m.model"></span>
+          <span class="text-[10px] ml-1" style="color: var(--muted)" x-text="'(' + m.tables.reduce((acc, t) => acc + t.rowCount, 0) + ')'"></span>
+        </button>
+      </template>
+    </div>
+
+    <!-- Active model context: doc id, table count -->
+    <template x-if="activeMemDBModel">
+      <div class="px-3 py-1.5 border-b text-[11px]" style="border-color: var(--border); background: var(--panel);">
+        <span style="color: var(--muted)">model:</span>
+        <span class="mono" style="color: var(--accent)" x-text="activeMemDBModel.model"></span>
+        <span class="ml-3" style="color: var(--muted)">documentId:</span>
+        <span class="mono" x-text="activeMemDBModel.documentId"></span>
+      </div>
+    </template>
+
+    <!-- Table picker for the active model. Most schemas have one main
+         table; stringset fields add `__field` junction tables. -->
+    <template x-if="activeMemDBModel && activeMemDBModel.tables.length">
+      <div class="flex items-center gap-1 px-2 py-1.5 border-b scroll" style="border-color: var(--border); background: var(--panel);">
+        <template x-for="t in activeMemDBModel.tables" :key="t.name">
+          <button class="tab" :class="{ active: activeMemDBTable === t.name }"
+                  @click="selectMemDBTable(t.name)">
+            <span class="mono" x-text="t.name"></span>
+            <span class="text-[10px] ml-1" style="color: var(--muted)" x-text="'(' + t.rowCount + ')'"></span>
+          </button>
+        </template>
+      </div>
+    </template>
+
+    <!-- Custom query box. SELECT / PRAGMA / WITH only — direct DML
+         would desync the engine projection from the Y.Doc, so the
+         server rejects anything else. CRUD goes through `record/...`. -->
+    <template x-if="activeMemDBModel">
+      <div class="px-3 py-2 border-b" style="border-color: var(--border); background: var(--panel-2);">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="uppercase tracking-wider text-[11px]" style="color: var(--muted)">query</span>
+          <span class="text-[10.5px]" style="color: var(--muted)">SELECT / PRAGMA / WITH only · runs against this model's :memory: engine</span>
+          <span class="flex-1"></span>
+          <button class="btn btn-sm" @click="clearMemDBQuery()" :disabled="!memdbQueryResults && !memdbQueryError">clear</button>
+          <button class="btn btn-sm btn-primary" @click="runMemDBQuery()" :disabled="!memdbQuery.trim()">run</button>
+        </div>
+        <textarea
+          class="w-full mono text-[12px] p-2 rounded"
+          style="background: var(--panel); border: 1px solid var(--border); color: var(--text); resize: vertical; min-height: 56px;"
+          placeholder="SELECT * FROM tasks WHERE status = 'pending' LIMIT 20"
+          x-model="memdbQuery"
+          @keydown.meta.enter.prevent="runMemDBQuery()"
+          @keydown.ctrl.enter.prevent="runMemDBQuery()"
+        ></textarea>
+        <template x-if="memdbQueryError">
+          <div class="mt-2 mono text-[11.5px] p-2 rounded" style="background: var(--panel); border: 1px solid var(--red); color: var(--red);" x-text="memdbQueryError"></div>
+        </template>
+      </div>
+    </template>
+
+    <!-- Schema strip: `PRAGMA table_info` for the active table. Hidden
+         while showing custom-query results so the strip reflects what's
+         on screen. -->
+    <template x-if="memdbColumns.length && !memdbQueryResults">
+      <div class="px-3 py-2 border-b text-[11px]" style="border-color: var(--border); background: var(--panel-2);">
+        <div class="uppercase tracking-wider mb-1" style="color: var(--muted)">columns</div>
+        <div class="flex flex-wrap gap-x-3 gap-y-1">
+          <template x-for="c in memdbColumns" :key="c.name">
+            <span>
+              <span class="mono" style="color: var(--accent)" x-text="c.name"></span>
+              <span class="mono" style="color: var(--muted)" x-text="' ' + c.type"></span>
+              <span x-show="c.pk" class="text-[10px]" style="color: var(--yellow)"> PK</span>
+              <span x-show="c.notNull && !c.pk" class="text-[10px]" style="color: var(--muted)"> NOT NULL</span>
+            </span>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <!-- Action bar above the table: shows context + "new row" trigger. -->
+    <template x-if="activeMemDBModel && !memdbQueryResults">
+      <div class="px-3 py-1.5 border-b flex items-center gap-2" style="border-color: var(--border); background: var(--panel);">
+        <span class="text-[11px]" style="color: var(--muted)">
+          <span x-text="memdbDisplayRows.length"></span> row<span x-show="memdbDisplayRows.length !== 1">s</span>
+          <span x-show="activeMemDBTable !== activeMemDBModel.mainTable">
+            (junction table — read-only; CRUD applies to the main table)
+          </span>
+        </span>
+        <span class="flex-1"></span>
+        <button
+          class="btn btn-sm"
+          x-show="canMemDBCreate"
+          @click="openMemDBCreate()"
+        >+ new row</button>
+      </div>
+    </template>
+
+    <!-- Banner when displaying custom query results -->
+    <template x-if="memdbQueryResults">
+      <div class="px-3 py-1.5 border-b flex items-center gap-2" style="border-color: var(--border); background: var(--panel);">
+        <span class="text-[11px]" style="color: var(--muted)">
+          custom query · <span x-text="memdbQueryResults.rows.length"></span> row<span x-show="memdbQueryResults.rows.length !== 1">s</span>
+        </span>
+        <span class="flex-1"></span>
+        <button class="btn btn-sm" @click="clearMemDBQuery()">back to table</button>
+      </div>
+    </template>
+
+    <!-- Row table or empty states -->
+    <div class="scroll" style="flex: 1;">
+      <template x-if="!memdbModels.length">
+        <div class="p-4 italic" style="color: var(--muted)">
+          No models with an in-memory SQL projection.
+          The host app's <span class="mono">InspectableModelHost</span> needs to surface at least one
+          <span class="mono">TypedModel&lt;T&gt;</span> or <span class="mono">DynamicModel</span>;
+          legacy <span class="mono">BaoModel&lt;T&gt;</span> doesn't expose its mirror here yet.
+          <span class="block mt-1">Open a doc in the Documents tab and the projection will appear here.</span>
+        </div>
+      </template>
+
+      <template x-if="memdbModels.length && !activeMemDBTable && !memdbQueryResults">
+        <div class="p-4 italic" style="color: var(--muted)">pick a model + table to view rows</div>
+      </template>
+
+      <!-- Default table view (shows when no custom query is active) -->
+      <template x-if="activeMemDBTable && !memdbQueryResults">
+        <div>
+          <template x-if="!memdbDisplayRows.length">
+            <div class="p-4 italic" style="color: var(--muted)">table is empty</div>
+          </template>
+          <template x-if="memdbDisplayRows.length">
+            <table class="w-full text-[12px] mono" style="border-collapse: collapse;">
+              <thead style="position: sticky; top: 0; background: var(--panel-2); z-index: 1;">
+                <tr>
+                  <template x-for="c in memdbColumns" :key="c.name">
+                    <th class="text-left px-2 py-1.5 border-b" style="border-color: var(--border); color: var(--muted); font-weight: 500; white-space: nowrap;">
+                      <span style="color: var(--accent)" x-text="c.name"></span>
+                      <span class="text-[10px]" style="color: var(--muted)" x-text="' ' + c.type.toLowerCase()"></span>
+                    </th>
+                  </template>
+                  <th x-show="canMemDBDelete && activeMemDBTable === activeMemDBModel.mainTable" class="px-2 py-1.5 border-b" style="border-color: var(--border); width: 1%; white-space: nowrap;">
+                    &nbsp;
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(r, ri) in memdbDisplayRows" :key="memdbRowKey(r, ri)">
+                  <tr class="memdb-row">
+                    <template x-for="c in memdbColumns" :key="c.name">
+                      <td class="px-2 py-1 border-b align-top" style="border-color: var(--border); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="memdbCellFull(r[c.name])">
+                        <span x-text="memdbCellDisplay(r[c.name])" :style="r[c.name] == null ? 'color: var(--muted); font-style: italic;' : ''"></span>
+                      </td>
+                    </template>
+                    <td x-show="canMemDBDelete && activeMemDBTable === activeMemDBModel.mainTable" class="px-2 py-1 border-b" style="border-color: var(--border); white-space: nowrap;">
+                      <button
+                        x-show="r.id"
+                        class="btn btn-xs"
+                        style="color: var(--red)"
+                        @click="deleteMemDBRow(r)"
+                      >del</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+        </div>
+      </template>
+
+      <!-- Custom query results -->
+      <template x-if="memdbQueryResults">
+        <div>
+          <template x-if="!memdbQueryResults.rows.length">
+            <div class="p-4 italic" style="color: var(--muted)">query returned 0 rows</div>
+          </template>
+          <template x-if="memdbQueryResults.rows.length">
+            <table class="w-full text-[12px] mono" style="border-collapse: collapse;">
+              <thead style="position: sticky; top: 0; background: var(--panel-2); z-index: 1;">
+                <tr>
+                  <template x-for="c in memdbQueryResults.columns" :key="c">
+                    <th class="text-left px-2 py-1.5 border-b" style="border-color: var(--border); color: var(--accent); font-weight: 500; white-space: nowrap;" x-text="c"></th>
+                  </template>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(r, ri) in memdbQueryResults.rows" :key="ri">
+                  <tr>
+                    <template x-for="c in memdbQueryResults.columns" :key="c">
+                      <td class="px-2 py-1 border-b align-top" style="border-color: var(--border); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="memdbCellFull(r[c])">
+                        <span x-text="memdbCellDisplay(r[c])" :style="r[c] == null ? 'color: var(--muted); font-style: italic;' : ''"></span>
+                      </td>
+                    </template>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- Create-row modal. Reuses the schema field metadata that the
+         Documents tab already surfaces; values get POSTed to the
+         existing record/create action which routes through
+         DynamicModel.create — Y.Doc + projection stay in sync. -->
+    <template x-if="memdbCreateOpen && memdbCreateFields.length">
+      <div class="modal-backdrop" @click.self="memdbCreateOpen = false">
+        <div class="modal" style="max-width: 520px;">
+          <div class="modal-head">
+            <span>New row in <span class="mono" x-text="activeMemDBModel ? activeMemDBModel.model : ''"></span></span>
+            <button class="btn btn-sm" @click="memdbCreateOpen = false">×</button>
+          </div>
+          <div class="modal-body" style="display: flex; flex-direction: column; gap: 8px;">
+            <template x-for="f in memdbCreateFields" :key="f.name">
+              <div>
+                <label class="text-[11px] uppercase tracking-wider" style="color: var(--muted)">
+                  <span class="mono" x-text="f.name"></span>
+                  <span class="text-[10px]" x-text="' · ' + f.kind"></span>
+                  <span x-show="!f.optional" class="text-[10px]" style="color: var(--yellow)"> required</span>
+                </label>
+                <input
+                  x-show="f.kind !== 'boolean' && f.kind !== 'json'"
+                  class="w-full mono text-[12px] p-1.5 mt-1 rounded"
+                  style="background: var(--panel); border: 1px solid var(--border); color: var(--text);"
+                  :type="f.kind === 'number' ? 'number' : 'text'"
+                  x-model="memdbCreateValues[f.name]"
+                />
+                <select
+                  x-show="f.kind === 'boolean'"
+                  class="w-full mono text-[12px] p-1.5 mt-1 rounded"
+                  style="background: var(--panel); border: 1px solid var(--border); color: var(--text);"
+                  x-model="memdbCreateValues[f.name]"
+                >
+                  <option value="">(unset)</option>
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </select>
+                <textarea
+                  x-show="f.kind === 'json'"
+                  class="w-full mono text-[12px] p-1.5 mt-1 rounded"
+                  style="background: var(--panel); border: 1px solid var(--border); color: var(--text); min-height: 60px;"
+                  placeholder="{}"
+                  x-model="memdbCreateValues[f.name]"
+                ></textarea>
+              </div>
+            </template>
+            <template x-if="memdbCreateError">
+              <div class="mono text-[11.5px] p-2 rounded" style="background: var(--panel); border: 1px solid var(--red); color: var(--red);" x-text="memdbCreateError"></div>
+            </template>
+          </div>
+          <div class="modal-foot">
+            <button class="btn btn-sm" @click="memdbCreateOpen = false">cancel</button>
+            <button class="btn btn-sm btn-primary" @click="submitMemDBCreate()" :disabled="memdbCreating">
+              <span x-text="memdbCreating ? 'creating...' : 'create'"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </template>
+  </section>
+

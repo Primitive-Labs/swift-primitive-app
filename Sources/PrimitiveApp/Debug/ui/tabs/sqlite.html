@@ -1,0 +1,123 @@
+  <!-- ========== SQLITE ========== -->
+  <section x-show="activeTab === 'sqlite'" class="panel flex flex-col min-h-0" style="height: 100%;">
+    <div class="panel-head">
+      SQLite
+      <span class="mono text-[11px]" style="color: var(--muted)" x-text="sqlitePath || '(no database yet — waiting for login)'"></span>
+      <span class="flex-1"></span>
+      <button class="btn btn-sm" @click="toggleSqliteDiag(); if (showSqliteDiag) loadSqliteDiag()">
+        <span x-text="showSqliteDiag ? 'hide diag' : 'diag'"></span>
+      </button>
+    </div>
+    <template x-if="showSqliteDiag">
+      <div class="p-3" style="border-bottom: 1px solid var(--border); background: var(--panel-2);">
+        <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Resolution trace</div>
+        <template x-if="!sqliteDiag">
+          <div class="italic text-xs" style="color: var(--muted)">loading…</div>
+        </template>
+        <template x-if="sqliteDiag">
+          <div class="text-xs">
+            <div>appId: <span class="mono" x-text="sqliteDiag.appId"></span></div>
+            <div class="mt-1">resolved path: <span class="mono" style="color: var(--accent);" x-text="sqliteDiag.resolvedPath || '(none)'"></span></div>
+
+            <!-- File probe: tells you whether the resolved file opens,
+                 what tables are inside, and (for kv_store) how many rows
+                 exist. This is the difference between "reader's looking
+                 at nothing" vs "reader's looking at something but it's
+                 not what we expected". -->
+            <template x-if="sqliteDiag.probe">
+              <div class="mt-2 p-2 rounded" style="border: 1px solid var(--border);">
+                <div class="uppercase tracking-wider" style="color: var(--muted); font-size: 10.5px;">File probe</div>
+                <div class="mt-1" x-show="sqliteDiag.probe.openError">
+                  open error: <span class="mono" style="color: var(--red);" x-text="sqliteDiag.probe.openError"></span>
+                </div>
+                <div class="mt-1" x-show="!sqliteDiag.probe.openError">
+                  size:
+                  <span class="mono" x-text="humanBytes(sqliteDiag.probe.fileSize)"></span>
+                  <span style="color: var(--muted);"> · WAL: </span>
+                  <span class="mono" x-text="humanBytes(sqliteDiag.probe.walFileSize)"></span>
+                  <span style="color: var(--muted);"> · SHM: </span>
+                  <span class="mono" x-text="humanBytes(sqliteDiag.probe.shmFileSize)"></span>
+                  <span style="color: var(--muted);"> · mode: </span>
+                  <span class="mono" x-text="sqliteDiag.probe.journalMode || '?'"></span>
+                </div>
+                <div class="mt-1" x-show="!sqliteDiag.probe.openError">
+                  tables:
+                  <template x-if="!(sqliteDiag.probe.tables || []).length">
+                    <span class="italic" style="color: var(--red);">none — file opens but is empty (client hasn't initialized storage yet?)</span>
+                  </template>
+                  <template x-if="(sqliteDiag.probe.tables || []).length">
+                    <span class="mono" x-text="(sqliteDiag.probe.tables || []).join(', ')"></span>
+                  </template>
+                </div>
+                <template x-if="!sqliteDiag.probe.openError && (sqliteDiag.probe.tables || []).includes('kv_store')">
+                  <div class="mt-1">
+                    <div>
+                      kv_store rows:
+                      <span class="mono" x-text="sqliteDiag.probe.kvStoreRowsPre != null ? sqliteDiag.probe.kvStoreRowsPre : '?'"></span>
+                      <span style="color: var(--muted);"> (pre-checkpoint) → </span>
+                      <span class="mono" x-text="sqliteDiag.probe.kvStoreRowsPost != null ? sqliteDiag.probe.kvStoreRowsPost : '?'"></span>
+                      <span style="color: var(--muted);"> (post-checkpoint)</span>
+                    </div>
+                    <div class="text-[10.5px]" style="color: var(--muted);">
+                      wal_checkpoint(PASSIVE): <span class="mono" x-text="sqliteDiag.probe.walCheckpointResult || '?'"></span>
+                    </div>
+                    <!-- Smoking-gun banner: pre and post differ → WAL
+                         visibility lag. See InspectorSQLiteReader's
+                         FileProbe comment for context. -->
+                    <div x-show="sqliteDiag.probe.kvStoreRowsPre !== sqliteDiag.probe.kvStoreRowsPost" class="mt-1 italic" style="color: var(--yellow);">
+                      Pre- and post-checkpoint counts differ — the reader's WAL-index view was stale and a passive checkpoint recovered the data. Likely explanation: iOS Simulator + two SQLite connections in the same process + active writer holding -shm locks.
+                    </div>
+                  </div>
+                </template>
+                <div class="mt-1" x-show="!sqliteDiag.probe.openError && !(sqliteDiag.probe.tables || []).includes('kv_store')">
+                  <span class="italic" style="color: var(--red);">no kv_store table — the reader is pointed at the wrong file OR the client's storage provider hasn't run initialize() yet</span>
+                </div>
+              </div>
+            </template>
+
+            <div class="mt-2" style="color: var(--muted);">Scanned roots:</div>
+            <template x-for="c in (sqliteDiag.candidates || [])" :key="c.root">
+              <div class="ml-2 mt-1">
+                <div class="mono text-[11px]" x-text="c.root"></div>
+                <template x-if="!c.subdirs.length">
+                  <div class="italic ml-4 mt-1" style="color: var(--muted);">no appId: subdirs match</div>
+                </template>
+                <template x-for="s in c.subdirs" :key="s.name">
+                  <div class="mono text-[11px] ml-4 mt-0.5">
+                    <span x-text="s.name"></span>
+                    <span style="color: var(--muted);" x-text="' — mtime ' + s.mtime"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>
+    <div class="flex items-center gap-1 px-2 py-1.5 border-b scroll" style="border-color: var(--border); background: var(--panel-2);">
+      <template x-for="s in sqliteStores" :key="s.name">
+        <button class="tab" :class="{ active: activeStore === s.name }" @click="selectStore(s.name)">
+          <span x-text="s.name"></span>
+          <span class="text-[10px] ml-1" style="color: var(--muted)" x-text="'(' + s.rowCount + ')'"></span>
+        </button>
+      </template>
+    </div>
+    <div class="scroll" style="flex: 1;">
+      <template x-if="!sqliteStores.length">
+        <div class="p-4 italic" style="color: var(--muted)">no sqlite stores yet</div>
+      </template>
+      <template x-if="activeStore && !storeRows.length">
+        <div class="p-4 italic" style="color: var(--muted)">store is empty</div>
+      </template>
+      <template x-for="r in storeRows" :key="r.key">
+        <div class="p-3 border-b" style="border-color: var(--border)">
+          <div class="mono text-[12px] font-medium" style="color: var(--accent)" x-text="r.key"></div>
+          <div class="text-[11px] mt-0.5" style="color: var(--muted)">
+            <span x-text="r.updatedAt || ''"></span>
+            <template x-if="r.metadata"><span> · metadata <span x-text="r.metadata"></span></span></template>
+          </div>
+          <pre class="code mt-1.5" x-text="prettyJSON(r.value)"></pre>
+        </div>
+      </template>
+    </div>
+  </section>

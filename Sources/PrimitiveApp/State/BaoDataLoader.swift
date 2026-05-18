@@ -70,9 +70,19 @@ public enum LoaderTrigger {
 ///                 return (resp["items"] as? [[String: Any]] ?? []).map(CollectionItem.init)
 ///             }
 ///         }
-///         .onDisappear { loader.unbind() }
 /// }
 /// ```
+///
+/// Cleanup happens automatically: `BaoDataLoader.deinit` cancels event
+/// subscriptions and the pending reload Task, and `@StateObject` deinits the
+/// loader when the view is destroyed. **Don't** wire `.onDisappear { loader.unbind() }`
+/// — inside a `NavigationSplitView` detail slot, SwiftUI routes a stale
+/// disappearance event through `_AppearanceActionModifier` on the *new* view
+/// instance milliseconds after `.task` runs, which would cancel the
+/// just-scheduled reload Task and leave the view permanently empty on
+/// re-open. If you genuinely need to release subscriptions before the view
+/// is destroyed (e.g. a loader owned by a long-lived view model), call
+/// `unbind()` from a non-lifecycle hook.
 @MainActor
 public final class BaoDataLoader<Data>: ObservableObject {
 

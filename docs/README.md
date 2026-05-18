@@ -270,5 +270,6 @@ See [PrimitiveAppDemoApp.swift:22-23](../../primitive-app-demo/Sources/Primitive
 
 - **Building a new app?** Start with [`primitive-app-template`](../../primitive-app-template/docs/README.md). It's the smallest possible consumer of this library.
 - **Looking for a feature example?** [`primitive-app-demo`](../../primitive-app-demo/docs/README.md) has one demo page per JsBaoClient feature.
+- **Debugging a running app?** [DebugInspector reference](./inspector.md) — the in-process HTTP dashboard that ships in every DEBUG build. Covers all 10 tabs, the HTTP surface, and how to add your own models / tests / tabs to it.
 - **Need to drop down to the raw client?** [`JsBaoClient` docs](../../../js-bao-wss-swift/swift-client/docs/README.md) — and `appState.client` gives you the instance.
 - **Working on Y.Map records?** [BaoModels & Queries](../../../js-bao-wss-swift/swift-client/docs/baomodels-and-queries.md) covers the typed record + query engine in depth.

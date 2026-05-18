@@ -1,0 +1,78 @@
+  <!-- ========== TESTS ========== -->
+  <section x-show="activeTab === 'tests'" class="grid gap-3" style="grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); height: 100%;">
+    <!-- Left: test tree -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Tests
+        <span class="text-xs" style="color: var(--muted)">· <span x-text="tests.length"></span> registered</span>
+        <span class="flex-1"></span>
+        <button class="btn btn-sm" @click="loadTests()" title="Reload test registry">↻</button>
+      </div>
+      <div class="p-2 border-b space-y-2" style="border-color: var(--border)">
+        <input class="input w-full" placeholder="filter tests…" x-model="testFilter"/>
+        <div class="flex items-center gap-2">
+          <button class="btn btn-sm btn-primary" @click="runSelected()" :disabled="!selectedTestCount || testRunning">
+            Run Selected (<span x-text="selectedTestCount"></span>)
+          </button>
+          <button class="btn btn-sm" @click="runAll()" :disabled="!tests.length || testRunning">Run All</button>
+          <span class="flex-1"></span>
+          <button class="btn btn-sm" @click="selectAllTests()">all</button>
+          <button class="btn btn-sm" @click="clearSelection()">none</button>
+        </div>
+      </div>
+      <div class="scroll" style="flex: 1;">
+        <template x-if="!tests.length">
+          <div class="p-4 italic" style="color: var(--muted)">
+            no tests registered.
+            <br>Conform your <span class="mono">PrimitiveAppState</span> subclass to <span class="mono">InspectorTestHost</span>.
+          </div>
+        </template>
+        <template x-for="g in groupedTests" :key="g.group">
+          <div>
+            <div class="flex items-center gap-2 px-3 py-1.5 text-xs uppercase tracking-wider border-b"
+                 style="color: var(--muted); background: var(--panel-2); border-color: var(--border)">
+              <input type="checkbox" @change="toggleGroup(g.group, g.items)"
+                     :checked="g.items.every(t => testSelection[t.id])"/>
+              <span x-text="g.group"></span>
+              <span style="color: var(--muted)" x-text="'(' + g.items.length + ')'"></span>
+            </div>
+            <template x-for="t in g.items" :key="t.id">
+              <div class="flex items-center gap-2 px-3 py-1.5 border-b" style="border-color: var(--border)">
+                <input type="checkbox" :checked="!!testSelection[t.id]" @change="toggleTest(t.id)"/>
+                <span class="mono font-medium" :style="`color: ${testStatusColor(t.id)}; width: 14px;`" x-text="testStatusIcon(t.id)"></span>
+                <span class="flex-1 text-sm truncate" x-text="t.name"></span>
+                <template x-if="testResults[t.id]">
+                  <span class="mono text-[10.5px]" style="color: var(--muted)" x-text="testResults[t.id].durationMs + 'ms'"></span>
+                </template>
+                <button class="btn btn-sm" @click="runOne(t.id)" :disabled="testRunning">run</button>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Right: progress + output -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Output
+        <span class="text-xs" style="color: var(--muted)">
+          <span style="color: var(--green)" x-text="passCount + ' passed'"></span>
+          · <span style="color: var(--red)" x-text="failCount + ' failed'"></span>
+          <template x-if="testRunning">
+            <span> · running <span class="mono" x-text="testRunning"></span></span>
+          </template>
+        </span>
+        <span class="flex-1"></span>
+        <button class="btn btn-sm" @click="copyTestOutput()" title="Copy all output">Copy</button>
+        <button class="btn btn-sm" @click="copyFailedOutput()" title="Copy only failed-test output">Copy failed</button>
+        <button class="btn btn-sm" @click="clearResults()">Clear</button>
+      </div>
+      <div class="scroll p-3 mono text-[12px]" x-ref="testOut" style="flex: 1; white-space: pre-wrap;">
+        <template x-if="!testOutput">
+          <div class="italic" style="color: var(--muted)">select tests and click Run to see output</div>
+        </template>
+        <span x-text="testOutput" style="color: var(--text)"></span>
+      </div>
+    </div>
+  </section>

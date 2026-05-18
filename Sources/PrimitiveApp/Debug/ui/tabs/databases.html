@@ -1,0 +1,300 @@
+  <!-- ========== DATABASES ========== -->
+  <section x-show="activeTab === 'databases'" class="grid gap-3" style="grid-template-columns: 340px minmax(0, 1fr); height: 100%;">
+    <!-- Left: list + new-db form -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Databases
+        <span class="text-xs" style="color: var(--muted)">· <span x-text="databases.length"></span></span>
+        <span class="flex-1"></span>
+        <button class="btn btn-sm btn-primary" @click="toggleNewDbForm()">new</button>
+        <button class="btn btn-sm" @click="loadDatabases()">refresh</button>
+      </div>
+      <div class="p-2" style="border-bottom: 1px solid var(--border);">
+        <input class="input mono text-xs" placeholder="filter databases…" x-model="dbFilter" style="width: 100%;"/>
+      </div>
+      <template x-if="showNewDbForm">
+        <div class="p-3" style="border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02);">
+          <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">new database</div>
+          <div x-show="newDbError" class="mb-2 p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="newDbError"></div>
+          <input type="text" class="input mono text-xs mb-2" placeholder="title *" x-model="newDb.title" style="width: 100%;">
+          <input type="text" class="input mono text-xs mb-2" placeholder="databaseType (optional)" x-model="newDb.databaseType" style="width: 100%;">
+          <div class="flex gap-2">
+            <button class="btn btn-sm btn-primary" @click="submitNewDb()" :disabled="newDbSubmitting">
+              <span x-show="!newDbSubmitting">create</span>
+              <span x-show="newDbSubmitting">creating…</span>
+            </button>
+            <button class="btn btn-sm" @click="showNewDbForm = false">cancel</button>
+          </div>
+        </div>
+      </template>
+      <template x-if="databasesError">
+        <div class="p-3 text-xs" style="color: var(--red)" x-text="databasesError"></div>
+      </template>
+      <div class="scroll" style="flex: 1;">
+        <template x-if="!filteredDatabases.length">
+          <div class="p-4 italic" style="color: var(--muted)" x-text="dbFilter ? 'no matches' : 'no databases — create one or check access'"></div>
+        </template>
+        <template x-for="db in filteredDatabases" :key="db.databaseId || db.id || JSON.stringify(db)">
+          <div class="row" :class="{ selected: selectedDatabaseId === (db.databaseId || db.id) }" @click="selectDb(db.databaseId || db.id)">
+            <div class="font-medium" x-text="db.title || db.name || '(untitled)'"></div>
+            <div class="mono text-[11px]" style="color: var(--muted)" x-text="db.databaseId || db.id"></div>
+            <div class="mt-1 flex gap-1 flex-wrap">
+              <template x-if="db.databaseType"><span class="badge" x-text="db.databaseType"></span></template>
+              <template x-if="db.visibility"><span class="badge" x-text="db.visibility"></span></template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Right: selected database detail -->
+    <div class="panel flex flex-col min-h-0">
+      <template x-if="!selectedDatabase">
+        <div class="p-4 italic" style="color: var(--muted)">select a database on the left</div>
+      </template>
+      <template x-if="selectedDatabase">
+        <div class="flex flex-col min-h-0" style="flex: 1;">
+          <div class="p-3">
+            <div class="text-sm font-medium mb-1" x-text="selectedDatabase.title || selectedDatabase.name || '(untitled)'"></div>
+            <div class="mono text-[11px]" style="color: var(--muted)" x-text="selectedDatabase.databaseId || selectedDatabase.id"></div>
+            <div class="mt-2 flex flex-wrap gap-1">
+              <template x-if="selectedDatabase.databaseType"><span class="badge badge-info" x-text="selectedDatabase.databaseType"></span></template>
+              <template x-if="selectedDatabase.visibility"><span class="badge" x-text="selectedDatabase.visibility"></span></template>
+              <template x-if="selectedDatabase.ownerId"><span class="badge" x-text="'owner ' + String(selectedDatabase.ownerId).slice(0,12)"></span></template>
+            </div>
+          </div>
+          <div class="p-3" style="border-top: 1px solid var(--border)">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Actions</div>
+            <div class="flex flex-wrap gap-2">
+              <button class="btn btn-sm" @click="renameDb()">rename</button>
+              <button class="btn btn-sm btn-danger" @click="deleteDb()">delete</button>
+            </div>
+          </div>
+          <!-- Models: primary CRUD surface. Powered by the DO's admin-data
+               routes (admin + db-owner required server-side) — bypasses
+               CEL rules so devs can inspect raw state during development.
+               Registered operations (the production, CEL-gated path) live
+               below as a secondary section. -->
+          <div class="p-3" style="border-top: 1px solid var(--border)">
+            <div class="flex items-center mb-2">
+              <div class="text-xs uppercase tracking-wider" style="color: var(--muted)">Models</div>
+              <span class="text-xs ml-2" style="color: var(--muted)">· <span x-text="dbModels.length"></span></span>
+              <span class="flex-1"></span>
+              <button class="btn btn-sm" @click="loadDbModels()" :disabled="dbModelsLoading">
+                <span x-show="!dbModelsLoading">refresh</span>
+                <span x-show="dbModelsLoading">loading…</span>
+              </button>
+            </div>
+            <template x-if="dbModelsError">
+              <div class="mb-2 p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="dbModelsError"></div>
+            </template>
+            <template x-if="!dbModelsLoading && !dbModels.length && !dbModelsError">
+              <div class="italic text-xs" style="color: var(--muted)">no models with recorded state in this database</div>
+            </template>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="name in dbModels" :key="name">
+                <button class="btn btn-sm" :class="{ 'btn-primary': dbActiveModelName === name }" @click="selectDbModel(name)" :disabled="dbRowsLoading">
+                  <span class="mono text-xs" x-text="name"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <!-- Inline "new record" form for the selected model. Field
+               kinds come from `/records/describe` (normalized by
+               `dbModelEditableFields`) and drive the same input-template
+               dispatch the Records tab uses. For models with no recorded
+               fields yet, falls back to a freeform JSON textarea. -->
+          <template x-if="dbShowNewRowForm && dbActiveModelName">
+            <div class="p-3" style="border-top: 1px solid var(--border); background: rgba(255,255,255,0.02);">
+              <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">
+                new <span class="mono" x-text="dbActiveModelName"></span> record
+              </div>
+              <div x-show="dbNewRowError" class="mb-2 p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="dbNewRowError"></div>
+              <template x-if="dbModelEditableFields.length">
+                <div>
+                  <template x-for="f in dbModelEditableFields" :key="f.name">
+                    <div class="mb-2 flex items-start gap-2">
+                      <label class="text-xs mono pt-1" style="width: 110px; color: var(--muted);">
+                        <span x-text="f.name"></span>
+                        <span class="text-[10px]" style="color: var(--muted); opacity: 0.6;" x-text="' ' + f.kind"></span>
+                      </label>
+                      <template x-if="f.kind === 'boolean'">
+                        <input type="checkbox" x-model="dbNewRow[f.name]">
+                      </template>
+                      <template x-if="f.kind === 'number'">
+                        <input type="number" class="input mono text-xs flex-1" step="any" x-model.number="dbNewRow[f.name]">
+                      </template>
+                      <template x-if="f.kind === 'stringset'">
+                        <input type="text" class="input mono text-xs flex-1" placeholder="comma,separated,values" x-model="dbNewRow[f.name]">
+                      </template>
+                      <template x-if="f.kind === 'json'">
+                        <textarea class="input mono text-xs flex-1" rows="3" placeholder='{"key": "value"}' x-model="dbNewRow[f.name]"></textarea>
+                      </template>
+                      <template x-if="f.kind === 'date'">
+                        <input type="text" class="input mono text-xs flex-1" placeholder="ISO 8601 (leave blank for now)" x-model="dbNewRow[f.name]">
+                      </template>
+                      <template x-if="f.kind === 'string'">
+                        <input type="text" class="input mono text-xs flex-1" x-model="dbNewRow[f.name]">
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <template x-if="!dbModelEditableFields.length">
+                <div>
+                  <div class="text-[11px] mb-1" style="color: var(--muted)">
+                    This model has no observed fields yet — enter a JSON body directly.
+                  </div>
+                  <textarea class="input mono text-xs" rows="6" placeholder='{"field": "value"}' x-model="dbNewRowJson" style="width: 100%;"></textarea>
+                </div>
+              </template>
+              <div class="flex gap-2 mt-2">
+                <button class="btn btn-sm btn-primary" @click="submitDbNewRow()" :disabled="dbNewRowSubmitting">
+                  <span x-show="!dbNewRowSubmitting">create</span>
+                  <span x-show="dbNewRowSubmitting">creating…</span>
+                </button>
+                <button class="btn btn-sm" @click="dbShowNewRowForm = false">cancel</button>
+              </div>
+            </div>
+          </template>
+
+          <!-- Record table for the selected model. Pulls from
+               `admin-data/query`; 403s surface as an inline explanation
+               (with a nudge to use Operations instead). -->
+          <div class="p-3 scroll" style="border-top: 1px solid var(--border); flex: 1;">
+            <template x-if="!dbActiveModelName && !dbRecordError">
+              <div class="italic text-xs" style="color: var(--muted)">pick a model above to browse its records</div>
+            </template>
+            <template x-if="dbRecordError">
+              <div class="p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px; white-space: pre-wrap;" x-text="dbRecordError"></div>
+            </template>
+            <template x-if="dbActiveModelName && !dbRecordError">
+              <div>
+                <div class="flex items-center mb-2">
+                  <span class="text-xs uppercase tracking-wider" style="color: var(--muted)">Records —</span>
+                  <span class="mono text-xs ml-2" x-text="dbActiveModelName"></span>
+                  <template x-if="dbRowsLoading">
+                    <span class="text-xs ml-2 italic" style="color: var(--muted)">loading…</span>
+                  </template>
+                  <span class="flex-1"></span>
+                  <template x-if="dbModelRows.length">
+                    <span class="text-xs mr-2" style="color: var(--muted)" x-text="dbModelRows.length + ' rows'"></span>
+                  </template>
+                  <button class="btn btn-sm" @click="loadDbModelRows()" :disabled="dbRowsLoading">refresh</button>
+                  <button class="btn btn-sm btn-primary" @click="toggleDbNewRowForm()">new record</button>
+                </div>
+                <template x-if="!dbRowsLoading && !dbModelRows.length">
+                  <div class="italic text-xs" style="color: var(--muted)">no records for this model</div>
+                </template>
+                <template x-if="dbModelRows.length">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <template x-for="col in dbModelColumns" :key="col">
+                          <th x-text="col"></th>
+                        </template>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="(r, i) in dbModelRows" :key="(r.id || r._id || i)">
+                        <tr>
+                          <template x-for="col in dbModelColumns" :key="col">
+                            <td><span class="mono text-xs" x-text="displayValue(r[col])"></span></td>
+                          </template>
+                          <td>
+                            <button class="btn btn-sm btn-danger" @click="deleteDbRow(r.id || r._id)">delete</button>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+              </div>
+            </template>
+          </div>
+
+          <!-- Operations: the production path. CEL-gated, app-defined;
+               hidden behind a toggle so it doesn't clutter the main
+               Records view. -->
+          <div class="p-3" style="border-top: 1px solid var(--border)">
+            <div class="flex items-center">
+              <button class="text-xs uppercase tracking-wider" style="color: var(--muted); background: none; border: none; cursor: pointer; padding: 0;" @click="showDbOperations = !showDbOperations">
+                <span x-text="(showDbOperations ? '▼ ' : '▶ ') + 'Registered operations'"></span>
+                <span class="text-xs ml-1 normal-case" style="color: var(--muted); text-transform: none; letter-spacing: 0;">· <span x-text="dbOperations.length"></span> CEL-gated</span>
+              </button>
+              <span class="flex-1"></span>
+              <template x-if="showDbOperations">
+                <button class="btn btn-sm" @click="loadDbOperations()" :disabled="dbOperationsLoading">
+                  <span x-show="!dbOperationsLoading">refresh</span>
+                  <span x-show="dbOperationsLoading">loading…</span>
+                </button>
+              </template>
+            </div>
+            <template x-if="showDbOperations">
+              <div class="mt-2">
+                <template x-if="dbOperationsError">
+                  <div class="mb-2 p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="dbOperationsError"></div>
+                </template>
+                <template x-if="!dbOperationsLoading && !dbOperations.length && !dbOperationsError">
+                  <div class="italic text-xs" style="color: var(--muted)">no registered operations on this database</div>
+                </template>
+                <div class="flex flex-wrap gap-2">
+                  <template x-for="op in dbOperations" :key="op.name || JSON.stringify(op)">
+                    <button class="btn btn-sm" :class="{ 'btn-primary': activeOperationName === op.name }" @click="runOperation(op.name)" :disabled="operationRunning">
+                      <span class="mono text-xs" x-text="op.name"></span>
+                      <template x-if="op.type || op.accessLevel">
+                        <span class="text-[10px] ml-1" style="color: var(--muted)" x-text="'(' + (op.type || op.accessLevel) + ')'"></span>
+                      </template>
+                    </button>
+                  </template>
+                </div>
+                <template x-if="activeOperationName">
+                  <div class="mt-3">
+                    <div class="flex items-center mb-2">
+                      <span class="text-xs uppercase tracking-wider" style="color: var(--muted)">Result —</span>
+                      <span class="mono text-xs ml-2" x-text="activeOperationName"></span>
+                      <template x-if="operationRunning">
+                        <span class="text-xs ml-2 italic" style="color: var(--muted)">running…</span>
+                      </template>
+                      <span class="flex-1"></span>
+                      <template x-if="operationRows.length">
+                        <span class="text-xs" style="color: var(--muted)" x-text="operationRows.length + ' rows'"></span>
+                      </template>
+                    </div>
+                    <template x-if="operationError">
+                      <div class="p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="operationError"></div>
+                    </template>
+                    <template x-if="!operationError && operationRows.length">
+                      <table class="table">
+                        <thead>
+                          <tr>
+                            <template x-for="col in operationColumns" :key="col">
+                              <th x-text="col"></th>
+                            </template>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="(r, i) in operationRows" :key="i">
+                            <tr>
+                              <template x-for="col in operationColumns" :key="col">
+                                <td><span class="mono text-xs" x-text="displayValue(r[col])"></span></td>
+                              </template>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </template>
+                    <template x-if="!operationError && !operationRows.length && operationResult !== null">
+                      <pre class="code" x-text="prettyJSON(operationResult)"></pre>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>

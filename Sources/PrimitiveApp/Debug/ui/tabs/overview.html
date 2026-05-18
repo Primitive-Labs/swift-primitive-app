@@ -1,0 +1,66 @@
+  <!-- ========== OVERVIEW ========== -->
+  <section x-show="activeTab === 'overview'" class="grid gap-3 scroll" style="grid-template-columns: repeat(2, minmax(0, 1fr)); height: 100%;">
+    <!-- Connection -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">Connection</div>
+      <div class="p-3 scroll">
+        <dl class="kv">
+          <dt>status</dt><dd><span class="badge" :class="conn.isConnected ? 'badge-ok' : 'badge-warn'" x-text="conn.isConnected ? 'connected' : 'disconnected'"></span></dd>
+          <dt>appId</dt><dd class="mono" x-text="conn.appId || '—'"></dd>
+          <dt>apiUrl</dt><dd class="mono" x-text="conn.apiUrl || '—'"></dd>
+          <dt>wsUrl</dt><dd class="mono" x-text="conn.wsUrl || '—'"></dd>
+          <dt>connectionId</dt><dd class="mono" x-text="conn.connectionId || '—'"></dd>
+          <dt>user</dt><dd x-text="user.name || '—'"></dd>
+          <dt>email</dt><dd x-text="user.email || '—'"></dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- Document summary -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Documents
+        <span class="flex-1"></span>
+        <button class="btn btn-sm" @click="activeTab = 'documents'">open tab →</button>
+      </div>
+      <div class="p-3 scroll">
+        <div class="grid grid-cols-3 gap-2 mb-3">
+          <div class="panel p-3" style="border-color: var(--border-strong)">
+            <div class="text-[11px] uppercase tracking-wider" style="color: var(--muted)">Open</div>
+            <div class="text-2xl mt-1 mono" style="color: var(--green)" x-text="docCounts.open"></div>
+          </div>
+          <div class="panel p-3" style="border-color: var(--border-strong)">
+            <div class="text-[11px] uppercase tracking-wider" style="color: var(--muted)">Known</div>
+            <div class="text-2xl mt-1 mono" style="color: var(--accent)" x-text="docCounts.total"></div>
+          </div>
+          <div class="panel p-3" style="border-color: var(--border-strong)">
+            <div class="text-[11px] uppercase tracking-wider" style="color: var(--muted)">Pending</div>
+            <div class="text-2xl mt-1 mono" :style="`color: ${docCounts.pending ? 'var(--yellow)' : 'var(--muted)'}`" x-text="docCounts.pending"></div>
+          </div>
+        </div>
+        <div class="text-xs mb-2" style="color: var(--muted)">selected</div>
+        <div class="code mono" x-text="selectedDocId || '(none)'"></div>
+      </div>
+    </div>
+
+    <!-- Recent events (compact) -->
+    <div class="panel flex flex-col min-h-0" style="grid-column: span 2;">
+      <div class="panel-head">
+        Recent events
+        <span class="flex-1"></span>
+        <button class="btn btn-sm" @click="activeTab = 'events'">full log →</button>
+      </div>
+      <div class="scroll" style="max-height: 280px;">
+        <template x-if="!events.length">
+          <div class="p-4 italic" style="color: var(--muted)">no events yet</div>
+        </template>
+        <template x-for="(e, i) in [...events].slice(-25).reverse()" :key="e.ts + ':' + i">
+          <div class="flex gap-3 px-3 py-1.5 border-b text-[12px]" style="border-color: var(--border)">
+            <span class="mono" style="color: var(--muted); width: 74px;" x-text="fmtTime(e.ts)"></span>
+            <span :style="`color: ${eventColor(e.type)}; width: 130px;`" class="font-medium" x-text="e.type"></span>
+            <span class="mono flex-1" style="color: var(--text); word-break: break-all;" x-text="compactBody(e)"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>

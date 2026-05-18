@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Primitive Inspector</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<style>
+/*__INSPECTOR_CSS_PLACEHOLDER__*/
+</style>
+</head>
+<body x-data="inspector()" x-init="init()" x-cloak>
+
+<!-- ===== HEADER ===== -->
+<header class="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 border-b" style="background: var(--panel); border-color: var(--border);">
+  <div class="flex items-center gap-2">
+    <span class="font-semibold tracking-wide" style="color: var(--accent)">PRIMITIVE</span>
+    <span class="text-[11px] uppercase tracking-[.15em]" style="color: var(--muted)">Inspector</span>
+  </div>
+  <span class="pill">
+    <span class="dot" :class="conn.isConnected ? 'dot-g' : 'dot-r'"></span>
+    <span x-text="conn.isConnected ? 'connected' : 'disconnected'"></span>
+  </span>
+  <span class="text-xs" style="color: var(--muted)">app: <strong class="mono" style="color: var(--text)" x-text="conn.appId || '—'"></strong></span>
+  <span class="text-xs hidden md:inline" style="color: var(--muted)">api: <strong class="mono" style="color: var(--text)" x-text="conn.apiUrl || '—'"></strong></span>
+  <span class="text-xs hidden lg:inline" style="color: var(--muted)">conn: <strong class="mono" style="color: var(--text)" x-text="(conn.connectionId || '—').slice(0,12)"></strong></span>
+  <span class="flex-1"></span>
+  <span class="text-xs" style="color: var(--muted)">user: <strong style="color: var(--text)" x-text="user.name || user.email || '—'"></strong></span>
+</header>
+
+<!-- ===== TAB BAR ===== -->
+<nav class="flex items-center gap-0 px-4 border-b" style="background: var(--panel); border-color: var(--border);">
+  <template x-for="t in tabs" :key="t.id">
+    <div class="tab" :class="{ active: activeTab === t.id }" @click="activeTab = t.id" x-text="t.label"></div>
+  </template>
+  <span class="flex-1"></span>
+  <span class="pill mono text-[11px]">
+    <span class="dot" :class="sseStatus === 'connected' ? 'dot-g' : sseStatus === 'connecting' ? 'dot-y' : 'dot-r'"></span>
+    <span x-text="'events: ' + sseStatus"></span>
+    <span style="color: var(--muted)" x-text="' · ' + events.length"></span>
+  </span>
+</nav>
+
+<!-- ===== MAIN ===== -->
+<!-- Each tab's HTML fragment is stitched in at this marker by InspectorHTML.swift.
+     The ordering comes from DebugInspector.tabOrder; each tab's file lives at
+     ui/tabs/{name}.html and is a single <section x-show="activeTab === '{name}'">. -->
+<main class="p-3" style="height: calc(100vh - 86px); overflow: hidden;">
+<!--__INSPECTOR_TABS_HTML__-->
+</main>
+
+<script>
+/*__INSPECTOR_JS_PLACEHOLDER__*/
+</script>
+</body>
+</html>

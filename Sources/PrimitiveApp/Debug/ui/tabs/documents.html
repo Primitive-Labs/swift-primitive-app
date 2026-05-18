@@ -1,0 +1,258 @@
+  <!-- ========== DOCUMENTS ========== -->
+  <section x-show="activeTab === 'documents'" class="grid gap-3" style="grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(260px, 340px); height: 100%;">
+
+    <!-- Left: doc list -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Documents
+        <span class="flex-1"></span>
+        <button class="btn btn-sm btn-primary" @click="createDoc()" title="Create new document">+ new</button>
+      </div>
+      <div class="p-2 border-b" style="border-color: var(--border)">
+        <input class="input w-full" placeholder="search title or id…" x-model="docFilter"/>
+      </div>
+      <div class="scroll" style="flex: 1;">
+        <template x-for="d in filteredDocs" :key="d.id">
+          <div class="row" :class="{ selected: selectedDocId === d.id }" @click="selectDoc(d.id)">
+            <div class="flex items-center gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="truncate font-medium text-sm" x-text="d.title || '(untitled)'"></div>
+                <div class="mono text-[10.5px] truncate" style="color: var(--muted)" x-text="d.id"></div>
+              </div>
+            </div>
+            <div class="mt-1 flex flex-wrap gap-1">
+              <template x-if="d.isPendingCreate"><span class="badge badge-warn">pending create</span></template>
+              <template x-if="d.isOpen && d.isSynced"><span class="badge badge-ok">synced</span></template>
+              <template x-if="d.isOpen && !d.isSynced && !d.isPendingCreate"><span class="badge badge-warn">syncing</span></template>
+              <template x-if="!d.isOpen"><span class="badge">server-only</span></template>
+              <template x-if="d.isLocalOnly"><span class="badge badge-v">local-only</span></template>
+              <template x-if="d.isReadOnly"><span class="badge">read-only</span></template>
+              <template x-if="d.permission"><span class="badge" x-text="d.permission"></span></template>
+            </div>
+          </div>
+        </template>
+        <template x-if="!filteredDocs.length">
+          <div class="p-4 italic text-center" style="color: var(--muted)">no documents</div>
+        </template>
+
+        <!-- Cascade-accessible docs: reached via collection membership
+             only (no direct permission grant). `documents.list()`
+             never returns these; the cascade-docs route walks
+             collections.list → collections.listDocuments per folder. -->
+        <div class="px-3 py-2 border-t border-b text-xs uppercase tracking-wider flex items-center gap-2"
+             style="border-color: var(--border); color: var(--muted);">
+          <span>Cascade-accessible</span>
+          <span class="mono" x-text="'(' + (cascadeDocs?.length || 0) + ')'"></span>
+          <span class="flex-1"></span>
+          <button class="btn btn-sm" @click="loadCascadeDocs()" :disabled="cascadeDocsLoading"
+                  title="GET /api/cascade-docs — collections.list ∪ listDocuments(cid)">
+            <span x-show="!cascadeDocsLoading">refresh</span>
+            <span x-show="cascadeDocsLoading">…</span>
+          </button>
+        </div>
+        <template x-for="d in filteredCascadeDocs" :key="'cascade-' + d.id">
+          <div class="row" :class="{ selected: selectedDocId === d.id }" @click="selectDoc(d.id)">
+            <div class="flex items-center gap-2">
+              <div class="flex-1 min-w-0">
+                <div class="truncate font-medium text-sm" x-text="d.title || '(untitled)'"></div>
+                <div class="mono text-[10.5px] truncate" style="color: var(--muted)" x-text="d.id"></div>
+              </div>
+            </div>
+            <div class="mt-1 flex flex-wrap gap-1">
+              <span class="badge">cascade</span>
+              <template x-if="d.permission"><span class="badge" x-text="d.permission"></span></template>
+              <template x-for="t in (d.tags || [])" :key="t">
+                <span class="badge badge-v" x-text="t"></span>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="!filteredCascadeDocs.length && !cascadeDocsLoading">
+          <div class="p-2 italic text-center text-[11px]" style="color: var(--muted)">
+            (none — refresh to load)
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Middle: records browser -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head flex-wrap">
+        <span>Records</span>
+        <template x-if="selectedDoc">
+          <select class="input mono text-xs" x-model="activeModelName" @change="loadRecords()">
+            <option value="">Pick a model…</option>
+            <template x-for="m in modelsForSelectedDoc" :key="m.name">
+              <option :value="m.name" x-text="m.name + (m.readOnly ? ' (read-only)' : '')"></option>
+            </template>
+          </select>
+        </template>
+        <span class="flex-1"></span>
+        <input class="input mono text-xs" placeholder="filter rows…" x-model="recordFilter" style="width: 180px;"/>
+        <button class="btn btn-sm" @click="loadRecords()" :disabled="!activeModelName">refresh</button>
+        <button class="btn btn-sm btn-primary" @click="toggleNewRecordForm()" :disabled="!activeModel || !activeModel.canCreate">new record</button>
+      </div>
+      <template x-if="showNewRecordForm && activeModel">
+        <div class="p-3 border-b" style="border-color: var(--border); background: var(--panel-alt, rgba(255,255,255,0.02));">
+          <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">
+            new <span class="mono" x-text="activeModel.name"></span> record
+          </div>
+          <div x-show="newRecordError" class="mb-2 p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="newRecordError"></div>
+          <template x-for="f in newRecordEditableFields" :key="f.name">
+            <div class="mb-2 flex items-start gap-2">
+              <label class="text-xs mono pt-1" style="width: 110px; color: var(--muted);">
+                <span x-text="f.name"></span>
+                <span x-show="!f.optional" style="color: #ff6b6b;"> *</span>
+                <span class="text-[10px]" style="color: var(--muted); opacity: 0.6;" x-text="' ' + f.kind"></span>
+              </label>
+              <template x-if="f.kind === 'boolean'">
+                <input type="checkbox" x-model="newRecord[f.name]">
+              </template>
+              <template x-if="f.kind === 'number'">
+                <input type="number" class="input mono text-xs flex-1" step="any" x-model.number="newRecord[f.name]">
+              </template>
+              <template x-if="f.kind === 'stringset'">
+                <input type="text" class="input mono text-xs flex-1" placeholder="comma,separated,values" x-model="newRecord[f.name]">
+              </template>
+              <template x-if="f.kind === 'json'">
+                <textarea class="input mono text-xs flex-1" rows="3" placeholder='{"key": "value"}' x-model="newRecord[f.name]"></textarea>
+              </template>
+              <template x-if="f.kind === 'date'">
+                <input type="text" class="input mono text-xs flex-1" placeholder="ISO 8601 (leave blank for now)" x-model="newRecord[f.name]">
+              </template>
+              <template x-if="f.kind === 'string' || f.kind === 'id'">
+                <input type="text" class="input mono text-xs flex-1" x-model="newRecord[f.name]" :placeholder="f.kind === 'id' ? '(leave blank to auto-generate)' : ''">
+              </template>
+            </div>
+          </template>
+          <div class="flex gap-2 mt-2">
+            <button class="btn btn-sm btn-primary" @click="submitNewRecord()" :disabled="newRecordSubmitting">
+              <span x-show="!newRecordSubmitting">create</span>
+              <span x-show="newRecordSubmitting">creating…</span>
+            </button>
+            <button class="btn btn-sm" @click="showNewRecordForm = false">cancel</button>
+          </div>
+        </div>
+      </template>
+      <div class="scroll" style="flex: 1;">
+        <template x-if="!selectedDoc">
+          <div class="p-4 italic" style="color: var(--muted)">select a document on the left</div>
+        </template>
+        <template x-if="selectedDoc && openingDocId === selectedDoc.id">
+          <div class="p-4 italic" style="color: var(--muted)">opening document and waiting for sync…</div>
+        </template>
+        <template x-if="selectedDoc && openingDocId !== selectedDoc.id && !modelsForSelectedDoc.length">
+          <div class="p-4 italic" style="color: var(--muted)">
+            no inspectable models registered for this document.
+            <br>conform your <span class="mono">PrimitiveAppState</span> subclass to
+            <span class="mono">InspectableModelHost</span> to surface them here.
+          </div>
+        </template>
+        <template x-if="selectedDoc && activeModel && filteredRecords.length">
+          <table class="table">
+            <thead>
+              <tr>
+                <template x-for="f in activeModel.fields" :key="f.name">
+                  <th class="sortable" @click="toggleSort(f.name)">
+                    <span x-text="f.name"></span>
+                    <span x-show="recordSort.field === f.name" class="mono" style="color: var(--accent)" x-text="recordSort.dir > 0 ? '↑' : '↓'"></span>
+                  </th>
+                </template>
+                <template x-if="activeModel && !activeModel.readOnly"><th></th></template>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="r in filteredRecords" :key="r.id || JSON.stringify(r)">
+                <tr>
+                  <template x-for="f in activeModel.fields" :key="f.name">
+                    <td>
+                      <template x-if="f.kind === 'id'"><span class="mono text-[11.5px]" x-text="r[f.name]"></span></template>
+                      <template x-if="f.kind === 'boolean'"><span class="badge" :class="r[f.name] ? 'badge-ok' : ''" x-text="r[f.name] ? 'true' : 'false'"></span></template>
+                      <template x-if="f.kind === 'json'"><pre class="code" x-text="prettyJSON(r[f.name])"></pre></template>
+                      <template x-if="f.kind === 'stringset'"><span class="mono text-xs" x-text="(r[f.name] || []).join(', ')"></span></template>
+                      <template x-if="f.kind !== 'id' && f.kind !== 'boolean' && f.kind !== 'json' && f.kind !== 'stringset'">
+                        <span class="mono" x-text="displayValue(r[f.name])"></span>
+                      </template>
+                    </td>
+                  </template>
+                  <template x-if="activeModel && !activeModel.readOnly">
+                    <td><button class="btn btn-sm btn-danger" @click="deleteRecord(r.id)">delete</button></td>
+                  </template>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </template>
+        <template x-if="selectedDoc && activeModel && !filteredRecords.length">
+          <div class="p-4 italic" style="color: var(--muted)" x-text="recordFilter ? 'no matches' : 'no records'"></div>
+        </template>
+      </div>
+      <template x-if="selectedDoc && activeModel">
+        <div class="panel-head" style="border-top: 1px solid var(--border); border-bottom: 0;">
+          <span class="text-xs" style="color: var(--muted)">
+            <span x-text="filteredRecords.length"></span> shown
+            <span x-show="recordFilter"> / <span x-text="records.length"></span> total</span>
+          </span>
+        </div>
+      </template>
+    </div>
+
+    <!-- Right: metadata + actions -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">Detail</div>
+      <template x-if="!selectedDoc">
+        <div class="p-4 italic" style="color: var(--muted)">select a document</div>
+      </template>
+      <template x-if="selectedDoc">
+        <div class="scroll" style="flex: 1;">
+          <div class="p-3">
+            <div class="text-sm font-medium mb-1" x-text="selectedDoc.title || '(untitled)'"></div>
+            <div class="mono text-[11px]" style="color: var(--muted)" x-text="selectedDoc.id"></div>
+            <div class="mt-2 flex flex-wrap gap-1">
+              <template x-if="selectedDoc.isPendingCreate"><span class="badge badge-warn">pending create</span></template>
+              <template x-if="selectedDoc.isOpen && selectedDoc.isSynced"><span class="badge badge-ok">synced</span></template>
+              <template x-if="selectedDoc.isLocalOnly"><span class="badge badge-v">local-only</span></template>
+              <template x-if="selectedDoc.isReadOnly"><span class="badge">read-only</span></template>
+              <template x-if="selectedDoc.permission"><span class="badge" x-text="selectedDoc.permission"></span></template>
+            </div>
+          </div>
+          <div class="p-3 border-t" style="border-color: var(--border)">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Actions</div>
+            <div class="flex flex-wrap gap-2">
+              <button class="btn btn-sm" @click="renameDoc()" :disabled="!selectedDoc.isOpen">rename</button>
+              <button class="btn btn-sm" @click="closeDoc()" x-show="selectedDoc.isOpen">close</button>
+              <button class="btn btn-sm" @click="shareDoc()">share…</button>
+              <button class="btn btn-sm btn-danger" @click="deleteDoc()">delete</button>
+            </div>
+          </div>
+          <div class="p-3 border-t" style="border-color: var(--border)">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Metadata</div>
+            <dl class="kv">
+              <dt>open</dt><dd x-text="yn(selectedDoc.isOpen)"></dd>
+              <dt>synced</dt><dd x-text="yn(selectedDoc.isSynced)"></dd>
+              <dt>pending create</dt><dd x-text="yn(selectedDoc.isPendingCreate)"></dd>
+              <dt>local-only</dt><dd x-text="yn(selectedDoc.isLocalOnly)"></dd>
+              <dt>has local copy</dt><dd x-text="yn(selectedDoc.hasLocalCopy)"></dd>
+              <dt>read-only</dt><dd x-text="yn(selectedDoc.isReadOnly)"></dd>
+              <dt>permission</dt><dd x-text="selectedDoc.permission || '—'"></dd>
+            </dl>
+          </div>
+          <div class="p-3 border-t" style="border-color: var(--border)">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Models</div>
+            <template x-if="!modelsForSelectedDoc.length">
+              <div class="text-xs italic" style="color: var(--muted)">none registered</div>
+            </template>
+            <template x-for="m in modelsForSelectedDoc" :key="m.name">
+              <div class="flex items-center gap-2 py-1 text-xs">
+                <span class="mono" x-text="m.name"></span>
+                <span class="flex-1"></span>
+                <template x-if="m.readOnly"><span class="badge">read-only</span></template>
+                <template x-if="!m.readOnly"><span class="badge badge-info">mutable</span></template>
+                <button class="btn btn-sm" @click="activeModelName = m.name; loadRecords();">view</button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>

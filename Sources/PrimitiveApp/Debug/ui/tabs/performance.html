@@ -1,0 +1,86 @@
+  <!-- ========== PERFORMANCE ========== -->
+  <section x-show="activeTab === 'performance'" class="panel flex flex-col min-h-0" style="height: 100%;">
+    <div class="panel-head">
+      Performance
+      <span class="text-xs" style="color: var(--muted)">· data-flow timeline · live · newest first</span>
+      <span class="flex-1"></span>
+      <!-- No refresh button: the timeline is derived from the live SSE
+           event stream, so it updates as events arrive. Clear hides
+           everything up to now; new events still stream in. -->
+      <button class="btn btn-sm" @click="clearPerf()" :disabled="!perfSummary.eventCount">clear</button>
+    </div>
+
+    <!-- Summary cards: where did the data come from, how long did it take. -->
+    <template x-if="perfSummary.eventCount > 0">
+      <div class="grid gap-2 p-3" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); border-bottom: 1px solid var(--border);">
+        <div class="p-2 rounded" style="background: var(--panel-2); border: 1px solid var(--border);">
+          <div class="text-[10.5px] uppercase tracking-wider" style="color: var(--muted)">docs opened</div>
+          <div class="text-lg font-medium mt-1 mono" x-text="perfSummary.docsOpened"></div>
+        </div>
+        <div class="p-2 rounded" style="background: var(--panel-2); border: 1px solid var(--border);">
+          <div class="text-[10.5px] uppercase tracking-wider" style="color: var(--muted)">from offline cache (sqlite)</div>
+          <div class="text-lg font-medium mt-1 mono">
+            <span x-text="perfSummary.sqliteCount"></span>
+            <span class="text-xs" style="color: var(--muted);" x-text="' loads · ' + humanBytes(perfSummary.sqliteBytes) + ' · ' + perfSummary.sqliteMs + ' ms'"></span>
+          </div>
+        </div>
+        <div class="p-2 rounded" style="background: var(--panel-2); border: 1px solid var(--border);">
+          <div class="text-[10.5px] uppercase tracking-wider" style="color: var(--muted)">from server</div>
+          <div class="text-lg font-medium mt-1 mono">
+            <span x-text="perfSummary.serverCount"></span>
+            <span class="text-xs" style="color: var(--muted);" x-text="' loads · ' + humanBytes(perfSummary.serverBytes) + ' · ' + perfSummary.serverMs + ' ms'"></span>
+          </div>
+        </div>
+        <div class="p-2 rounded" style="background: var(--panel-2); border: 1px solid var(--border);">
+          <div class="text-[10.5px] uppercase tracking-wider" style="color: var(--muted)">remote updates</div>
+          <div class="text-lg font-medium mt-1 mono" x-text="perfSummary.remoteUpdates"></div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Filter controls -->
+    <div class="flex items-center gap-2 px-3 py-2" style="border-bottom: 1px solid var(--border); background: var(--panel-2);">
+      <span class="text-xs" style="color: var(--muted);">filter by doc:</span>
+      <select class="input mono text-xs" x-model="perfDocFilter">
+        <option value="">all documents</option>
+        <template x-for="docId in perfDocIds" :key="docId">
+          <option :value="docId">
+            <span x-text="perfDocLabel(docId)"></span>
+          </option>
+        </template>
+      </select>
+      <span class="flex-1"></span>
+      <span class="text-xs" style="color: var(--muted);" x-text="perfTimeline.length + ' events'"></span>
+    </div>
+
+    <!-- Timeline: one row per phase event, newest-last (reading-order),
+         plain-English labels, with doc badge + timing in the same line. -->
+    <div class="p-3 scroll" style="flex: 1;">
+      <template x-if="!perfTimeline.length">
+        <div class="italic text-xs" style="color: var(--muted)">no events yet — open a document to start collecting.</div>
+      </template>
+      <template x-for="(e, i) in perfTimeline" :key="e.ts + ':' + e.docId + ':' + i">
+        <div class="flex items-start gap-3 py-1.5" style="border-bottom: 1px solid var(--border);">
+          <div class="mono text-[10.5px]" style="color: var(--muted); width: 72px; flex-shrink: 0; padding-top: 2px;" x-text="fmtTimeShort(e.ts)"></div>
+          <div style="width: 22px; flex-shrink: 0; text-align: center;" x-text="e.icon"></div>
+          <div class="flex-1 min-w-0">
+            <div class="text-xs">
+              <span x-text="e.label"></span>
+              <template x-if="e.bytes != null">
+                <span style="color: var(--muted);" x-text="' · ' + humanBytes(e.bytes)"></span>
+              </template>
+              <template x-if="e.elapsedMs != null">
+                <span style="color: var(--muted);" x-text="' · ' + e.elapsedMs + ' ms'"></span>
+              </template>
+            </div>
+            <div class="mono text-[10.5px]" style="color: var(--muted)">
+              <span x-text="perfDocLabel(e.docId)"></span>
+              <template x-if="e.modelHint">
+                <span style="color: var(--accent);" x-text="' · ' + e.modelHint"></span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>

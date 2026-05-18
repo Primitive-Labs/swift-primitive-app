@@ -1,0 +1,32 @@
+  <!-- ========== EVENTS ========== -->
+  <section x-show="activeTab === 'events'" class="panel flex flex-col min-h-0" style="height: 100%;">
+    <div class="panel-head">
+      Events
+      <span class="text-xs" style="color: var(--muted)">· <span x-text="filteredEvents.length"></span> shown / <span x-text="events.length"></span> buffered</span>
+    </div>
+    <div class="flex items-center gap-2 px-2 py-1.5 border-b" style="border-color: var(--border); background: var(--panel-2);">
+      <input class="input" placeholder="filter: type, docId, substring…" x-model="eventFilter" style="width: 260px;"/>
+      <select class="input text-xs" x-model="eventTypeFilter">
+        <option value="">all types</option>
+        <template x-for="t in eventTypes" :key="t"><option :value="t" x-text="t"></option></template>
+      </select>
+      <button class="btn btn-sm" :class="{ 'btn-primary': eventsPaused }" @click="eventsPaused = !eventsPaused" x-text="eventsPaused ? 'Resume' : 'Pause'"></button>
+      <button class="btn btn-sm" @click="events = []">Clear</button>
+      <span class="flex-1"></span>
+      <label class="flex items-center gap-1.5 text-xs" style="color: var(--muted)">
+        <input type="checkbox" x-model="eventAutoScroll"/> autoscroll
+      </label>
+    </div>
+    <div class="scroll" style="flex: 1;" x-ref="evLog">
+      <template x-if="!filteredEvents.length">
+        <div class="p-4 italic" style="color: var(--muted)">no events match</div>
+      </template>
+      <template x-for="(e, i) in filteredEvents" :key="e.ts + ':' + i">
+        <div class="flex gap-3 px-3 py-1.5 border-b text-[12px]" style="border-color: var(--border)">
+          <span class="mono" style="color: var(--muted); width: 82px;" x-text="fmtTime(e.ts)"></span>
+          <span :style="`color: ${eventColor(e.type)}; width: 150px;`" class="font-medium" x-text="e.type"></span>
+          <span class="mono flex-1" x-text="compactBody(e)"></span>
+        </div>
+      </template>
+    </div>
+  </section>

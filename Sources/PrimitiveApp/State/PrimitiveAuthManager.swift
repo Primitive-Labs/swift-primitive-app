@@ -25,6 +25,16 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     @Published public var authError: String?
     @Published public var isAuthenticating = false
 
+    /// True while the client is attempting to restore a persisted
+    /// session on cold start (loading the stored JWT; if it's aged
+    /// out, trying a cookie-based refresh). Flips back to false once
+    /// the restore attempt resolves, successfully or not.
+    ///
+    /// Consumers should gate any "you are logged out" UI on this flag
+    /// — otherwise the login screen flashes for ~1–2s on cold start
+    /// while a refresh is in flight. `AuthGateView` already does this.
+    @Published public var isAuthRestoring = false
+
     /// Current login UI state
     @Published public var loginState: LoginState = .initial
 
@@ -64,6 +74,21 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             isAuthenticated = true
             userId = client.getUserId()
             logger.info("Already authenticated: userId=\(self.userId ?? "nil")")
+        } else {
+            // The client's async setupStorage() may still be trying to
+            // restore a session (load persisted JWT; if aged out, hit
+            // /auth/refresh with the cookie). Block any "logged out" UI
+            // until that attempt resolves so we don't flash the login
+            // screen on cold start.
+            isAuthRestoring = true
+            Task { @MainActor [weak self] in
+                do {
+                    try await client.waitForAuthReady(timeout: 15)
+                } catch {
+                    logger.error("waitForAuthReady timed out; treating as restore-failed")
+                }
+                self?.isAuthRestoring = false
+            }
         }
 
         authSuccessSubscription = client.events.on(.authSuccess) { [weak self] (event: AuthSuccessEvent) in
@@ -73,6 +98,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
                 self.isAuthenticated = true
                 self.userId = client.getUserId()
                 self.isAuthenticating = false
+                self.isAuthRestoring = false
                 self.loginState = .initial
                 self.authError = nil
             }
@@ -85,6 +111,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
                 logger.error("Auth failed: \(msg)")
                 self.authError = msg
                 self.isAuthenticating = false
+                self.isAuthRestoring = false
                 self.loginState = .error(msg)
             }
         }

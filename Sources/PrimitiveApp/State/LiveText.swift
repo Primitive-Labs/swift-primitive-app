@@ -108,9 +108,15 @@ public struct StringEditDelta: Equatable, Sendable {
 ///         .task {
 ///             liveText.bind(client: client, documentId: docId, name: "myDoc")
 ///         }
-///         .onDisappear { liveText.unbind() }
 /// }
 /// ```
+///
+/// Cleanup happens via `deinit` when `@StateObject` releases the instance.
+/// Don't wire `.onDisappear { liveText.unbind() }` — in a `NavigationSplitView`
+/// detail slot, SwiftUI can fire the disappearance closure on the *new* view
+/// instance right after `.task`, which would tear down the binding the user
+/// just installed. If you need explicit teardown for a non-`@StateObject`
+/// owner, call `unbind()` from a non-lifecycle hook.
 ///
 /// **Important:** ``bind(client:documentId:name:)`` resolves the YText handle
 /// outside of any open transaction (the safe pattern). Callers do not need to

@@ -73,6 +73,12 @@ public struct AuthGateView<Content: View>: View {
         ZStack {
             if !appState.isInitialized {
                 PrimitiveLoadingView("Initializing...")
+            } else if authManager.isAuthRestoring && !authManager.isAuthenticated {
+                // The client is still attempting a cookie-based session
+                // refresh (access token aged out but the refresh cookie
+                // is live). Hold on a loading view instead of flashing
+                // the login screen for the ~1–2s the refresh takes.
+                PrimitiveLoadingView("Restoring session...")
             } else if !authManager.isAuthenticated && appState.client != nil {
                 PrimitiveLoginView(appName: appName, authManager: authManager)
             } else if appState.isConnected || hasConnectedOnce {

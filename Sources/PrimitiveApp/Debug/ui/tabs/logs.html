@@ -1,0 +1,34 @@
+  <!-- ========== LOGS ========== -->
+  <section x-show="activeTab === 'logs'" class="panel flex flex-col min-h-0" style="height: 100%;">
+    <div class="panel-head">
+      Logs
+      <span class="text-xs" style="color: var(--muted)">· inspector-internal (actions, 404s, errors)</span>
+      <span class="text-xs" style="color: var(--muted)">· <span x-text="filteredLogs.length"></span> / <span x-text="logs.length"></span></span>
+      <span class="flex-1"></span>
+      <label class="flex items-center gap-1.5 text-xs" style="color: var(--muted)">
+        <input type="checkbox" x-model="logsAutoRefresh"/> auto-refresh
+      </label>
+      <button class="btn btn-sm" @click="loadLogs()">refresh</button>
+    </div>
+    <div class="flex items-center gap-2 px-2 py-1.5 border-b" style="border-color: var(--border); background: var(--panel-2);">
+      <input class="input" placeholder="filter messages…" x-model="logsFilter" style="width: 260px;"/>
+      <select class="input text-xs" x-model="logsLevelFilter">
+        <option value="">all levels</option>
+        <option value="info">info</option>
+        <option value="warn">warn</option>
+        <option value="error">error</option>
+      </select>
+    </div>
+    <div class="scroll" style="flex: 1;">
+      <template x-if="!filteredLogs.length">
+        <div class="p-4 italic" style="color: var(--muted)">no log lines match</div>
+      </template>
+      <template x-for="(l, i) in filteredLogs" :key="l.ts + ':' + i">
+        <div class="flex gap-3 px-3 py-1 border-b text-[12px] mono" style="border-color: var(--border)">
+          <span style="color: var(--muted); width: 82px;" x-text="fmtTime(l.ts)"></span>
+          <span :style="`color: ${logLevelColor(l.level)}; width: 44px;`" class="font-medium uppercase tracking-wider" x-text="l.level"></span>
+          <span class="flex-1" style="color: var(--text); white-space: pre-wrap; word-break: break-all;" x-text="l.message"></span>
+        </div>
+      </template>
+    </div>
+  </section>

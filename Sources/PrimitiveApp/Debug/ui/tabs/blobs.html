@@ -1,0 +1,99 @@
+  <!-- ========== BLOBS ========== -->
+  <section x-show="activeTab === 'blobs'" class="grid gap-3" style="grid-template-columns: 360px minmax(0, 1fr); height: 100%;">
+    <!-- Left: blob list + upload -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Blobs
+        <template x-if="selectedDoc">
+          <span class="text-xs" style="color: var(--muted)">· <span x-text="blobs.length"></span></span>
+        </template>
+        <span class="flex-1"></span>
+        <label class="btn btn-sm btn-primary" :class="{ 'opacity-50 cursor-not-allowed': !selectedDocId || blobUploading }">
+          <span x-show="!blobUploading">upload</span>
+          <span x-show="blobUploading">uploading…</span>
+          <input type="file" class="hide" @change="uploadBlob($event)" :disabled="!selectedDocId || blobUploading">
+        </label>
+        <button class="btn btn-sm" @click="loadBlobs()" :disabled="!selectedDocId">refresh</button>
+      </div>
+      <template x-if="blobUploadError">
+        <div class="p-2 m-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="blobUploadError"></div>
+      </template>
+      <template x-if="!selectedDocId">
+        <div class="p-4 italic" style="color: var(--muted)">
+          select a document on the Documents tab first — blobs in js-bao-wss are always scoped to a document.
+        </div>
+      </template>
+      <template x-if="selectedDocId">
+        <div class="scroll" style="flex: 1;">
+          <template x-if="!blobs.length">
+            <div class="p-4 italic" style="color: var(--muted)">no blobs attached to this document — upload one above</div>
+          </template>
+          <template x-for="b in blobs" :key="b.blobId || b.id || JSON.stringify(b)">
+            <div class="row" :class="{ selected: selectedBlobId === (b.blobId || b.id) }" @click="selectBlob(b.blobId || b.id)">
+              <div class="text-xs font-medium" x-text="b.filename || '(unnamed)'"></div>
+              <div class="mono text-[11px]" style="color: var(--muted)" x-text="b.blobId || b.id"></div>
+              <div class="mt-1 flex gap-1 flex-wrap">
+                <template x-if="b.contentType || b.type"><span class="badge" x-text="b.contentType || b.type"></span></template>
+                <template x-if="b.numBytes != null || b.size != null">
+                  <span class="badge" x-text="humanBytes(b.numBytes != null ? b.numBytes : b.size)"></span>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </div>
+
+    <!-- Right: selected blob detail + inline preview -->
+    <div class="panel flex flex-col min-h-0">
+      <template x-if="!selectedBlob">
+        <div class="p-4 italic" style="color: var(--muted)">select a blob on the left</div>
+      </template>
+      <template x-if="selectedBlob">
+        <div class="flex flex-col min-h-0" style="flex: 1;">
+          <div class="p-3">
+            <div class="text-sm font-medium mb-1" x-text="selectedBlob.filename || '(unnamed)'"></div>
+            <div class="mono text-[11px]" style="color: var(--muted)" x-text="selectedBlob.blobId || selectedBlob.id"></div>
+            <div class="mt-2 flex flex-wrap gap-1">
+              <template x-if="selectedBlob.contentType"><span class="badge badge-info" x-text="selectedBlob.contentType"></span></template>
+              <template x-if="selectedBlob.numBytes != null">
+                <span class="badge" x-text="humanBytes(selectedBlob.numBytes)"></span>
+              </template>
+              <template x-if="selectedBlob.createdAt || selectedBlob.uploadedAt">
+                <span class="badge" x-text="selectedBlob.createdAt || selectedBlob.uploadedAt"></span>
+              </template>
+            </div>
+          </div>
+          <div class="p-3" style="border-top: 1px solid var(--border)">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Actions</div>
+            <div class="flex flex-wrap gap-2">
+              <a class="btn btn-sm" :href="blobContentUrl(selectedBlob, false)" target="_blank">open</a>
+              <a class="btn btn-sm" :href="blobContentUrl(selectedBlob, true)">download</a>
+              <button class="btn btn-sm btn-danger" @click="deleteBlob(selectedBlob.blobId || selectedBlob.id)">delete</button>
+            </div>
+          </div>
+          <div class="p-3 scroll" style="border-top: 1px solid var(--border); flex: 1;">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Preview</div>
+            <template x-if="isImageContentType(selectedBlob.contentType)">
+              <img :src="blobContentUrl(selectedBlob, false)" style="max-width: 100%; max-height: 60vh; border-radius: 4px; background: var(--bg);" alt="blob"/>
+            </template>
+            <template x-if="isTextContentType(selectedBlob.contentType)">
+              <div>
+                <template x-if="!blobTextLoaded[selectedBlob.blobId || selectedBlob.id]">
+                  <button class="btn btn-sm" @click="loadBlobText(selectedBlob)">load text</button>
+                </template>
+                <template x-if="blobTextLoaded[selectedBlob.blobId || selectedBlob.id]">
+                  <pre class="code" style="max-height: 60vh;" x-text="blobTextCache[selectedBlob.blobId || selectedBlob.id]"></pre>
+                </template>
+              </div>
+            </template>
+            <template x-if="!isImageContentType(selectedBlob.contentType) && !isTextContentType(selectedBlob.contentType)">
+              <div class="italic text-xs" style="color: var(--muted)">
+                binary content — use "open" or "download" above.
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>

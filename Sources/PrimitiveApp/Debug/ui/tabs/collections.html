@@ -1,0 +1,148 @@
+  <!-- ========== COLLECTIONS / ACCESS CONTROL ========== -->
+  <section x-show="activeTab === 'collections'" class="grid gap-3" style="grid-template-columns: 340px minmax(0, 1fr); height: 100%;">
+    <!-- Left: collection list + new-collection form -->
+    <div class="panel flex flex-col min-h-0">
+      <div class="panel-head">
+        Collections
+        <span class="text-xs" style="color: var(--muted)">· <span x-text="collections.length"></span></span>
+        <span class="flex-1"></span>
+        <button class="btn btn-sm btn-primary" @click="toggleNewCollectionForm()">new</button>
+        <button class="btn btn-sm" @click="loadCollections()">refresh</button>
+      </div>
+      <div class="p-2" style="border-bottom: 1px solid var(--border);">
+        <input class="input mono text-xs" placeholder="filter collections…" x-model="collectionFilter" style="width: 100%;"/>
+      </div>
+      <template x-if="showNewCollectionForm">
+        <div class="p-3" style="border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02);">
+          <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">new collection</div>
+          <div x-show="newCollectionError" class="mb-2 p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="newCollectionError"></div>
+          <input type="text" class="input mono text-xs mb-2" placeholder="name *" x-model="newCollection.name" style="width: 100%;">
+          <div class="flex gap-2">
+            <button class="btn btn-sm btn-primary" @click="submitNewCollection()" :disabled="newCollectionSubmitting">
+              <span x-show="!newCollectionSubmitting">create</span>
+              <span x-show="newCollectionSubmitting">creating…</span>
+            </button>
+            <button class="btn btn-sm" @click="showNewCollectionForm = false">cancel</button>
+          </div>
+        </div>
+      </template>
+      <template x-if="collectionsError">
+        <div class="p-3 text-xs" style="color: var(--red)" x-text="collectionsError"></div>
+      </template>
+      <div class="scroll" style="flex: 1;">
+        <template x-if="!filteredCollections.length">
+          <div class="p-4 italic" style="color: var(--muted)" x-text="collectionFilter ? 'no matches' : 'no collections — create one to get started'"></div>
+        </template>
+        <template x-for="c in filteredCollections" :key="c.collectionId || c.id || JSON.stringify(c)">
+          <div class="row" :class="{ selected: selectedCollectionId === (c.collectionId || c.id) }" @click="selectCollection(c.collectionId || c.id)">
+            <div class="font-medium" x-text="c.name || c.title || '(untitled)'"></div>
+            <div class="mono text-[11px]" style="color: var(--muted)" x-text="c.collectionId || c.id"></div>
+            <div class="mt-1 flex gap-1 flex-wrap">
+              <template x-if="c.visibility"><span class="badge" x-text="c.visibility"></span></template>
+              <template x-if="typeof c.memberCount === 'number'"><span class="badge" x-text="c.memberCount + ' members'"></span></template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Right: selected collection detail -->
+    <div class="panel flex flex-col min-h-0">
+      <template x-if="!selectedCollection">
+        <div class="p-4 italic" style="color: var(--muted)">select a collection on the left</div>
+      </template>
+      <template x-if="selectedCollection">
+        <div class="flex flex-col min-h-0" style="flex: 1;">
+          <div class="p-3">
+            <div class="text-sm font-medium mb-1" x-text="selectedCollection.name || selectedCollection.title || '(untitled)'"></div>
+            <div class="mono text-[11px]" style="color: var(--muted)" x-text="selectedCollection.collectionId || selectedCollection.id"></div>
+            <div class="mt-2 flex flex-wrap gap-1">
+              <template x-if="selectedCollection.visibility"><span class="badge" x-text="selectedCollection.visibility"></span></template>
+              <template x-if="typeof selectedCollection.memberCount === 'number'"><span class="badge" x-text="selectedCollection.memberCount + ' members'"></span></template>
+            </div>
+          </div>
+          <div class="p-3" style="border-top: 1px solid var(--border)">
+            <div class="text-xs uppercase tracking-wider mb-2" style="color: var(--muted)">Actions</div>
+            <div class="flex flex-wrap gap-2">
+              <button class="btn btn-sm" @click="renameCollection()">rename</button>
+              <button class="btn btn-sm btn-danger" @click="deleteCollection()">delete</button>
+            </div>
+          </div>
+
+          <!-- Documents in this collection. Add via inline picker; remove per row. -->
+          <div class="p-3" style="border-top: 1px solid var(--border)">
+            <div class="flex items-center mb-2">
+              <div class="text-xs uppercase tracking-wider" style="color: var(--muted)">Documents</div>
+              <span class="text-xs ml-2" style="color: var(--muted)">· <span x-text="collectionDocs.length"></span></span>
+              <span class="flex-1"></span>
+              <button class="btn btn-sm" :class="{ 'btn-primary': showAddDocPicker }" @click="toggleAddDocPicker()">
+                <span x-show="!showAddDocPicker">+ add</span>
+                <span x-show="showAddDocPicker">cancel</span>
+              </button>
+              <button class="btn btn-sm" @click="loadCollectionDocs()" :disabled="collectionDocsLoading">refresh</button>
+            </div>
+
+            <!-- Inline picker: filters the global `docs` list (snapshot-fed),
+                 hides docs already in the collection, shows a scrollable
+                 list that's one click to add. Beats a raw prompt() for
+                 documentId. -->
+            <template x-if="showAddDocPicker">
+              <div class="mb-3 p-2 rounded" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border);">
+                <div class="text-[10.5px] uppercase tracking-wider mb-2" style="color: var(--muted)">pick a document to add</div>
+                <input type="text" class="input mono text-xs mb-2" placeholder="filter by title or id…" x-model="addDocPickerFilter" style="width: 100%;"/>
+                <div class="scroll" style="max-height: 240px;">
+                  <template x-if="!addablePickerDocs.length">
+                    <div class="italic text-xs p-2" style="color: var(--muted)" x-text="addDocPickerFilter ? 'no matches' : 'every known document is already in this collection'"></div>
+                  </template>
+                  <template x-for="d in addablePickerDocs" :key="d.id">
+                    <div class="row" @click="addDocToCollectionById(d.id)">
+                      <div class="text-xs font-medium" x-text="d.title || '(untitled)'"></div>
+                      <div class="mono text-[11px]" style="color: var(--muted)" x-text="d.id"></div>
+                      <div class="mt-1 flex gap-1 flex-wrap">
+                        <template x-if="d.isOpen"><span class="badge badge-ok">open</span></template>
+                        <template x-if="d.permission"><span class="badge" x-text="d.permission"></span></template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="!collectionDocs.length && !collectionDocsLoading">
+              <div class="italic text-xs" style="color: var(--muted)">no documents in this collection</div>
+            </template>
+            <template x-for="d in collectionDocs" :key="d.documentId || d.id || JSON.stringify(d)">
+              <div class="flex items-center gap-2 py-1" style="border-bottom: 1px solid var(--border)">
+                <div class="flex-1">
+                  <!-- listDocuments response only carries ids + membership
+                       metadata (no title). Cross-reference the snapshot-fed
+                       global `docs` list so titles show the same way they do
+                       on the Documents tab. -->
+                  <div class="text-xs" x-text="d.title || docTitleForId(d.documentId || d.id)"></div>
+                  <div class="mono text-[11px]" style="color: var(--muted)" x-text="d.documentId || d.id"></div>
+                </div>
+                <button class="btn btn-sm btn-danger" @click="removeDocFromCollection(d.documentId || d.id)">remove</button>
+              </div>
+            </template>
+          </div>
+
+          <!-- Access / group permissions / members, all from getAccess(). -->
+          <div class="p-3 scroll" style="border-top: 1px solid var(--border); flex: 1;">
+            <div class="flex items-center mb-2">
+              <div class="text-xs uppercase tracking-wider" style="color: var(--muted)">Access</div>
+              <span class="flex-1"></span>
+              <button class="btn btn-sm" @click="grantCollectionPermission()">+ grant group</button>
+              <button class="btn btn-sm" @click="addCollectionMember()">+ add member</button>
+              <button class="btn btn-sm" @click="loadCollectionAccess()" :disabled="collectionAccessLoading">refresh</button>
+            </div>
+            <template x-if="collectionAccessError">
+              <div class="p-2 text-xs" style="color: #ff6b6b; background: rgba(255,107,107,0.08); border-radius: 4px;" x-text="collectionAccessError"></div>
+            </template>
+            <template x-if="!collectionAccessError">
+              <pre class="code" x-text="prettyJSON(collectionAccess)"></pre>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>

@@ -1,12 +1,29 @@
 import SwiftUI
 
 /// User profile page showing avatar, name, email, and logout button.
+///
+/// Developer info (connection status, app name) is shown when:
+/// - `showDeveloperInfo` is explicitly set to `true`, OR
+/// - The `PRIMITIVE_DEV` environment variable is set (e.g. via Xcode scheme)
+///
+/// In release builds without the env var, developer info is hidden by default.
 public struct PrimitiveProfileView: View {
     @EnvironmentObject var appState: PrimitiveAppState
     @ObservedObject var authManager: PrimitiveAuthManager
+    var showDeveloperInfo: Bool
 
-    public init(authManager: PrimitiveAuthManager) {
+    public init(authManager: PrimitiveAuthManager, showDeveloperInfo: Bool? = nil) {
         self.authManager = authManager
+        if let explicit = showDeveloperInfo {
+            self.showDeveloperInfo = explicit
+        } else {
+            // Auto-detect: show in debug builds or when PRIMITIVE_DEV env var is set
+            #if DEBUG
+            self.showDeveloperInfo = true
+            #else
+            self.showDeveloperInfo = ProcessInfo.processInfo.environment["PRIMITIVE_DEV"] != nil
+            #endif
+        }
     }
 
     public var body: some View {
@@ -32,25 +49,27 @@ public struct PrimitiveProfileView: View {
                     .padding(.vertical, 8)
                 }
 
-                // Connection info
-                Section("Connection") {
-                    HStack {
-                        Text("Status")
-                        Spacer()
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(appState.statusColor)
-                                .frame(width: 8, height: 8)
-                            Text(appState.connectionStatus)
+                // Connection info (developer mode only)
+                if showDeveloperInfo {
+                    Section("Developer") {
+                        HStack {
+                            Text("Status")
+                            Spacer()
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(appState.statusColor)
+                                    .frame(width: 8, height: 8)
+                                Text(appState.connectionStatus)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        HStack {
+                            Text("App")
+                            Spacer()
+                            Text(appState.credentialSource)
                                 .foregroundStyle(.secondary)
                         }
-                    }
-
-                    HStack {
-                        Text("App")
-                        Spacer()
-                        Text(appState.credentialSource)
-                            .foregroundStyle(.secondary)
                     }
                 }
 
