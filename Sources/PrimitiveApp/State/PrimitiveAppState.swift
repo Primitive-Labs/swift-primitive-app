@@ -314,7 +314,10 @@ open class PrimitiveAppState: ObservableObject {
         }
     }
 
-    /// Called after a document is successfully opened. Override to set up BaoModels.
+    /// Called after a document is successfully opened. Override to set up
+    /// `TypedModel<T>` instances for this doc (use `makeTypedModel(doc:documentId:)`,
+    /// which also registers with the debug inspector). The legacy `BaoModel<T>`
+    /// API still works; new apps should use `TypedModel<T>` + codegen.
     open func onDocumentOpened(documentId: String) {}
 
     // MARK: - Sync Messages
