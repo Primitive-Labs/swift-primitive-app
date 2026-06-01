@@ -533,7 +533,13 @@ public final class DebugInspector: @unchecked Sendable {
                 guard let id = body["documentId"] as? String,
                       let email = body["email"] as? String else { return ["ok": false, "error": "documentId + email required"] }
                 let permission = (body["permission"] as? String) ?? "read-write"
-                _ = try await client.documents.sendInvitation(documentId: id, email: email, permission: permission)
+                // Migrated off the deprecated `sendInvitation` to `updatePermissions`
+                // (the deferred-grant flow), per the js-bao deprecation guidance.
+                _ = try await client.documents.updatePermissions(documentId: id, params: [
+                    "email": email,
+                    "permission": permission,
+                    "sendEmail": true,
+                ])
                 return ["ok": true]
             case "doc/setPermission":
                 // Update an already-accepted user's permission on a document
@@ -1169,17 +1175,14 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client else { return ["items": []] }
 
         // 1. Fetch the user's direct-grant doc set so we can subtract
-        //    it. `documents.list` returns owned + directly-shared
-        //    docs (anything with a row in the user's permission
-        //    table) — exactly the "non-cascade" set.
+        //    it. The owned + shared union (migrated off the deprecated
+        //    `documents.list`) is anything with a row in the user's
+        //    permission table — exactly the "non-cascade" set.
         var directDocIds = Set<String>()
         do {
-            let resp = try await client.documents.list(options: PaginationOptions(limit: 500))
-            let items = (resp["items"] ?? resp["documents"]) as? [[String: Any]] ?? []
-            for item in items {
-                if let id = item["documentId"] as? String, !id.isEmpty {
-                    directDocIds.insert(id)
-                }
+            let summaries = try await client.me.accessibleDocumentSummaries(limit: 500)
+            for item in summaries where !item.documentId.isEmpty {
+                directDocIds.insert(item.documentId)
             }
         } catch {
             // If the list call fails, fall through with an empty set
@@ -1424,7 +1427,8 @@ public final class DebugInspector: @unchecked Sendable {
         } else {
             result["permissions"] = []
         }
-        if let invites = try? await client.documents.listInvitations(documentId: documentId) {
+        // Migrated off the deprecated `listInvitations` to `listPendingInvitations`.
+        if let invites = try? await client.documents.listPendingInvitations(documentId: documentId) {
             result["invitations"] = invites
         } else {
             result["invitations"] = []

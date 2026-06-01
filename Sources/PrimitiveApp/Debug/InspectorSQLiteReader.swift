@@ -11,6 +11,29 @@ import SQLite3
 ///
 /// WAL mode is enabled by the writer, which means a read-only handle from this process can
 /// safely coexist with the writer handle — no lock contention, and we see committed state.
+
+/// Throttles the "no resolved db path" notice so it logs once per app
+/// (not on every ~2s inspector poll) until a path actually appears. The
+/// db file isn't created until the first local write, so a brand-new /
+/// read-only session legitimately has no file yet — that's a debug note,
+/// not a recurring warning.
+private final class NoDbPathLogThrottle: @unchecked Sendable {
+    static let shared = NoDbPathLogThrottle()
+    private let lock = NSLock()
+    private var loggedApps = Set<String>()
+
+    /// Returns true the first time it's asked for a given app (until reset).
+    func shouldLog(_ appId: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return loggedApps.insert(appId).inserted
+    }
+    /// Call once a path resolves, so a later disappearance logs again.
+    func reset(_ appId: String) {
+        lock.lock(); defer { lock.unlock() }
+        loggedApps.remove(appId)
+    }
+}
+
 struct InspectorSQLiteReader {
 
     let appId: String
@@ -190,9 +213,15 @@ struct InspectorSQLiteReader {
     /// List all `store` names found in the kv_store table along with their row counts.
     func listStores() -> [StoreInfo] {
         guard let dbPath = resolveDatabasePath() else {
-            inspectorLog("sqlite: no resolved db path (not logged in yet?)", level: "warn")
+            // Log once (debug) instead of on every poll — the offline store
+            // file doesn't exist until the first local write, so an empty /
+            // read-only session having no path is normal, not a warning.
+            if NoDbPathLogThrottle.shared.shouldLog(appId) {
+                inspectorLog("sqlite: no local store yet for app \(appId) — created on first local write; inspector storage tab is empty until then", level: "debug")
+            }
             return []
         }
+        NoDbPathLogThrottle.shared.reset(appId)
         return openReadOnly(dbPath) { db in
             // Refresh our view of the WAL before reading. See
             // `syncWalView` for the "why" — without this, iOS-simulator

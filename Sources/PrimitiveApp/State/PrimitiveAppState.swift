@@ -152,7 +152,13 @@ open class PrimitiveAppState: ObservableObject {
     }
 
     /// Connect the client (called after auth succeeds or with a dev token).
-    public func connectClient() async {
+    ///
+    /// Subclasses may override to run app-specific setup after the
+    /// websocket is up (e.g. resolve a per-user singleton doc, bind
+    /// TypedModels). Call `super.connectClient()` first so the base
+    /// class still connects, hydrates `userName`, and fetches the
+    /// document list.
+    open func connectClient() async {
         guard let client else { return }
 
         connectionStatus = "Connecting..."
@@ -246,13 +252,15 @@ open class PrimitiveAppState: ObservableObject {
         defer { isLoadingDocs = false }
 
         do {
-            let response = try await client.documents.list(options: PaginationOptions(limit: 50))
-            let items = (response["items"] ?? response["documents"]) as? [[String: Any]] ?? []
-            documents = items.map { doc in
+            // Migrated off the deprecated `documents.list()` to the owned +
+            // shared union (via the app-level summary helper), matching the
+            // js-bao deprecation guidance.
+            let summaries = try await client.me.accessibleDocumentSummaries(limit: 50)
+            documents = summaries.map { doc in
                 PrimitiveDocumentInfo(
-                    id: doc["documentId"] as? String ?? "",
-                    title: doc["title"] as? String ?? "(untitled)",
-                    permission: doc["permission"] as? String ?? "?"
+                    id: doc.documentId,
+                    title: doc.title,
+                    permission: doc.permission
                 )
             }
         } catch is CancellationError {
@@ -299,14 +307,27 @@ open class PrimitiveAppState: ObservableObject {
         addSyncMessage("Opening \(docId.prefix(16))...")
 
         do {
-            let _ = try await client.openDocument(
+            // `.localIfAvailableElseNetwork` resolves immediately when a
+            // local copy exists (the common case after the first launch,
+            // and the case for freshly-created docs from
+            // `getOrCreateWithAlias` whose initial open populates the
+            // local store). With `.network` here, brand-new empty docs
+            // park up to 15s in `JsBaoClient.openDocument` waiting for a
+            // `.sync(synced: true)` event that won't fire until there's
+            // actual server content to deliver. Sync still progresses in
+            // the background; views bound through `BaoDataLoader` with
+            // `.onModelChange` / `.onSync` reload as content arrives.
+            let doc = try await client.openDocument(
                 docId,
-                options: OpenDocumentOptions(waitForLoad: .network, enableNetworkSync: true)
+                options: OpenDocumentOptions(
+                    waitForLoad: .localIfAvailableElseNetwork,
+                    enableNetworkSync: true
+                )
             )
             addSyncMessage("Document opened")
             isSyncing = false
             isSynced = true
-            onDocumentOpened(documentId: docId)
+            await onDocumentOpened(doc: doc, documentId: docId)
         } catch {
             addSyncMessage("Error: \(error)")
             errorMessage = "Failed to open document: \(error.localizedDescription)"
@@ -314,10 +335,37 @@ open class PrimitiveAppState: ObservableObject {
         }
     }
 
-    /// Called after a document is successfully opened. Override to set up
-    /// `TypedModel<T>` instances for this doc (use `makeTypedModel(doc:documentId:)`,
-    /// which also registers with the debug inspector). The legacy `BaoModel<T>`
-    /// API still works; new apps should use `TypedModel<T>` + codegen.
+    /// Called after a document is successfully opened — the **preferred**
+    /// override point.
+    ///
+    /// You get the live `YDocument` handle, so you can immediately bind a
+    /// `TypedModel<T>` without re-opening:
+    ///
+    /// ```swift
+    /// override func onDocumentOpened(doc: YDocument, documentId: String) async {
+    ///     todos = makeTypedModel(doc: doc, documentId: documentId)
+    /// }
+    /// ```
+    ///
+    /// Default implementation forwards to the legacy
+    /// `onDocumentOpened(documentId:)` hook so existing subclasses keep
+    /// working — but new code should override **this** overload.
+    open func onDocumentOpened(doc: YDocument, documentId: String) async {
+        onDocumentOpened(documentId: documentId)
+    }
+
+    /// ⚠️ LEGACY / NON-BINDING hook — kept only for back-compat.
+    ///
+    /// This overload does **NOT** hand you the `YDocument`, so it is the
+    /// WRONG place to bind `TypedModel`s. Overriding *this* instead of the
+    /// `doc:documentId:` overload above is a common mistake: it compiles,
+    /// runs, and your models silently never bind — with no error to point
+    /// at the cause.
+    ///
+    /// ✅ To bind models, override `onDocumentOpened(doc:documentId:)` — it
+    /// gives you the live `YDocument` directly. Only override THIS one if
+    /// you genuinely want a doc-id-only lifecycle notification (and will do
+    /// your own `openDocument(...)`), which is wasteful and racy for binding.
     open func onDocumentOpened(documentId: String) {}
 
     // MARK: - Sync Messages
@@ -388,6 +436,97 @@ open class PrimitiveAppState: ObservableObject {
             }
         ))
         return model
+    }
+
+    // MARK: - Auxiliary documents (multi-doc apps)
+    //
+    // `selectDocumentAwaiting(_:)` is the single-selected-doc lifecycle:
+    // it closes the previous selection before opening the new one,
+    // updates `selectedDocId`, routes sync/remoteUpdate hooks, and fires
+    // `onDocumentOpened(doc:documentId:)`. That fits "one document per
+    // user" apps. It doesn't fit apps that keep one ambient doc open
+    // (e.g. a library / index doc) while opening and closing N other
+    // docs alongside it — calling `selectDocumentAwaiting` for a list
+    // detail view would close the ambient library doc.
+    //
+    // `openAuxiliaryDoc(_:)` is the multi-doc primitive: it opens a doc
+    // through the same `JsBaoClient.openDocument(...)` path so the
+    // DocumentManager registers it for sync, but **does not touch**
+    // `selectedDocId` or call `onDocumentOpened`. The caller owns the
+    // lifecycle — typically a SwiftUI detail view that opens in `.task`
+    // and closes in `.onDisappear`. Bind `TypedModel<T>` against the
+    // returned YDocument via `makeTypedModel(...)` so the model still
+    // registers with the debug inspector.
+    //
+    // Usage:
+    //
+    //     // In your TodoListDetailView:
+    //     .task {
+    //         let (_, todos) = try await appState.openAuxiliaryDoc(
+    //             documentId,
+    //             modelType: TodoItem.self
+    //         )
+    //         self.todos = todos
+    //     }
+    //     .onDisappear {
+    //         Task { await appState.closeAuxiliaryDoc(documentId) }
+    //     }
+
+    /// Open a document outside the single-selected-doc lifecycle and
+    /// return its `YDocument`. Does NOT update `selectedDocId` or call
+    /// `onDocumentOpened`. See block comment above.
+    ///
+    /// Closing is the caller's responsibility — typically from
+    /// `.onDisappear`. The `JsBaoClient.openDocument(...)` call is
+    /// idempotent: opening the same id twice returns the same
+    /// `YDocument` and doesn't double-register sync.
+    @MainActor
+    public func openAuxiliaryDoc(
+        _ documentId: String,
+        waitForLoad: WaitForLoadMode = .localIfAvailableElseNetwork,
+        enableNetworkSync: Bool = true
+    ) async throws -> YDocument {
+        guard let client else {
+            throw JsBaoError(
+                code: .unavailable,
+                message: "openAuxiliaryDoc requires an initialized client"
+            )
+        }
+        return try await client.openDocument(documentId, options: OpenDocumentOptions(
+            waitForLoad: waitForLoad,
+            enableNetworkSync: enableNetworkSync
+        ))
+    }
+
+    /// Convenience: open an auxiliary doc AND bind a single
+    /// `TypedModel<T>` in one call. Returns `(doc, model)` so the
+    /// caller can store both — store `model` for reads/writes, store
+    /// `doc` only if you need to bind additional `TypedModel`s.
+    @MainActor
+    public func openAuxiliaryDoc<T: PrimitiveModel>(
+        _ documentId: String,
+        modelType: T.Type,
+        modelName: String? = nil,
+        waitForLoad: WaitForLoadMode = .localIfAvailableElseNetwork,
+        enableNetworkSync: Bool = true
+    ) async throws -> (doc: YDocument, model: TypedModel<T>) {
+        let doc = try await openAuxiliaryDoc(
+            documentId,
+            waitForLoad: waitForLoad,
+            enableNetworkSync: enableNetworkSync
+        )
+        let model: TypedModel<T> = makeTypedModel(doc: doc, documentId: documentId, name: modelName)
+        return (doc, model)
+    }
+
+    /// Close an auxiliary doc that was opened via `openAuxiliaryDoc`.
+    /// Safe to call on the currently selected doc too — though if it's
+    /// the selected doc, prefer to switch via `selectDocumentAwaiting`
+    /// instead so the base bookkeeping (`selectedDocId`, sync routing)
+    /// is correctly cleared.
+    @MainActor
+    public func closeAuxiliaryDoc(_ documentId: String) async {
+        await client?.closeDocument(documentId)
     }
 
     // MARK: - Cleanup

@@ -1,10 +1,19 @@
 import SwiftUI
 
 /// Toolbar-ready view showing connection status dot, status text, and user name.
+///
+/// Takes `appState` as an explicit parameter rather than reading it from the
+/// environment. `@EnvironmentObject var appState: PrimitiveAppState` would
+/// only resolve when the parent injected an instance whose RUNTIME type is
+/// exactly `PrimitiveAppState` — a subclass (e.g. an app's `MyAppState`) is
+/// stored under its own type key and the lookup traps. Passing the state
+/// explicitly is subclass-safe.
 public struct ConnectionStatusView: View {
-    @EnvironmentObject var appState: PrimitiveAppState
+    @ObservedObject var appState: PrimitiveAppState
 
-    public init() {}
+    public init(appState: PrimitiveAppState) {
+        self.appState = appState
+    }
 
     public var body: some View {
         HStack(spacing: 8) {
@@ -55,12 +64,19 @@ public struct PrimitiveLoadingView: View {
 /// Shows login UI when unauthenticated, loading state while connecting,
 /// and the provided content once connected.
 public struct AuthGateView<Content: View>: View {
-    @EnvironmentObject var appState: PrimitiveAppState
+    @ObservedObject var appState: PrimitiveAppState
     @ObservedObject var authManager: PrimitiveAuthManager
     let appName: String
     let content: () -> Content
 
-    public init(appName: String = "Primitive", authManager: PrimitiveAuthManager, @ViewBuilder content: @escaping () -> Content) {
+    /// - Parameter appState: The app's `PrimitiveAppState` instance. Passed
+    ///   explicitly (rather than read from `@EnvironmentObject`) so that
+    ///   apps subclassing `PrimitiveAppState` can use this view without
+    ///   tripping SwiftUI's exact-runtime-type lookup. See the type-level
+    ///   doc-comment on `ConnectionStatusView` for the underlying SwiftUI
+    ///   limitation.
+    public init(appState: PrimitiveAppState, appName: String = "Primitive", authManager: PrimitiveAuthManager, @ViewBuilder content: @escaping () -> Content) {
+        self.appState = appState
         self.appName = appName
         self.authManager = authManager
         self.content = content
@@ -120,10 +136,15 @@ public struct AuthGateView<Content: View>: View {
 }
 
 /// Sidebar view showing the list of documents with selection support.
+///
+/// See `ConnectionStatusView` for why `appState` is an explicit parameter
+/// rather than `@EnvironmentObject`.
 public struct DocumentSidebarView: View {
-    @EnvironmentObject var appState: PrimitiveAppState
+    @ObservedObject var appState: PrimitiveAppState
 
-    public init() {}
+    public init(appState: PrimitiveAppState) {
+        self.appState = appState
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {

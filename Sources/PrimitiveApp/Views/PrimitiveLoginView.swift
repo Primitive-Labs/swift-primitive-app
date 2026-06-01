@@ -10,7 +10,12 @@ import AppKit
 /// PrimitiveLoginView(appName: "My App")
 /// ```
 public struct PrimitiveLoginView: View {
-    @EnvironmentObject var appState: PrimitiveAppState
+    // `appState` is intentionally NOT pulled from `@EnvironmentObject` here.
+    // SwiftUI's environment lookup is exact-runtime-type; a subclass of
+    // `PrimitiveAppState` injected upstream would not satisfy a
+    // `@EnvironmentObject var appState: PrimitiveAppState` declaration and
+    // would trap on first access. This view only needs the auth manager,
+    // which is passed in explicitly.
     @ObservedObject var authManager: PrimitiveAuthManager
     let appName: String
     let showGoogleOAuth: Bool

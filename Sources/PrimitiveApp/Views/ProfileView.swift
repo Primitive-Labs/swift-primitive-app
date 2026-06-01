@@ -8,11 +8,16 @@ import SwiftUI
 ///
 /// In release builds without the env var, developer info is hidden by default.
 public struct PrimitiveProfileView: View {
-    @EnvironmentObject var appState: PrimitiveAppState
+    @ObservedObject var appState: PrimitiveAppState
     @ObservedObject var authManager: PrimitiveAuthManager
     var showDeveloperInfo: Bool
 
-    public init(authManager: PrimitiveAuthManager, showDeveloperInfo: Bool? = nil) {
+    /// - Parameter appState: The app's `PrimitiveAppState` instance. Passed
+    ///   explicitly rather than read from `@EnvironmentObject` so subclasses
+    ///   work (see `ConnectionStatusView` for the underlying SwiftUI
+    ///   exact-runtime-type limitation).
+    public init(appState: PrimitiveAppState, authManager: PrimitiveAuthManager, showDeveloperInfo: Bool? = nil) {
+        self.appState = appState
         self.authManager = authManager
         if let explicit = showDeveloperInfo {
             self.showDeveloperInfo = explicit

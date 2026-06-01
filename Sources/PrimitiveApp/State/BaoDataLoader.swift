@@ -30,11 +30,99 @@ public enum LoaderTrigger {
     /// REST-backed loaders that need to refresh after reconnect.
     case onConnect
 
+    /// Reload whenever a specific `TypedModel<T>` / `DynamicModel` records
+    /// an add, update, or delete. The closest analogue to JS-bao's per-model
+    /// `Model.subscribe` reactivity — fires for both local and remote writes,
+    /// debounced like the other triggers.
+    ///
+    /// Prefer this over `.onSync` + `.onRemoteUpdate` when the loader is
+    /// reading from a single model: the model-level subscription is tighter
+    /// (no spurious reloads from unrelated models in the same doc) and
+    /// matches the JS pattern of binding views to model events.
+    case onModelChange(ModelSubscribable)
+
     /// Caller-supplied subscription installer. Receive the connected client and
     /// a `reload` callback; install whatever event subscription you want and
     /// return it (or `nil` if you don't want to install anything). The loader
     /// holds the subscription and cancels it on `unbind` / deinit.
     case custom((JsBaoClient, @escaping () -> Void) -> EventSubscription?)
+}
+
+/// Anything the loader can subscribe to for `.onModelChange`. Both
+/// `TypedModel<T>` and `DynamicModel` conform via retroactive extensions
+/// below — keeps `swift-client` from having to know about the loader.
+public protocol ModelSubscribable: AnyObject {
+    /// Register a callback that fires after any add, update, or delete on
+    /// the model. Returns an unsubscribe closure.
+    @discardableResult
+    func subscribe(_ callback: @escaping () -> Void) -> () -> Void
+}
+
+// `DynamicModel.subscribe(...)` already matches the protocol signature
+// exactly. `TypedModel<T>` doesn't expose `subscribe` at the typed layer,
+// so the extension forwards through `dynamic`.
+extension DynamicModel: ModelSubscribable {}
+
+extension TypedModel: ModelSubscribable {
+    @discardableResult
+    public func subscribe(_ callback: @escaping () -> Void) -> () -> Void {
+        return dynamic.subscribe(callback)
+    }
+}
+
+// MARK: - LoaderPhase
+
+/// View-facing trinary load state. Returned by `BaoDataLoader.phase`.
+///
+/// The `loader.data ?? []` pattern is a common foot-gun: it collapses
+/// "first load hasn't completed yet" and "first load completed, no
+/// results" into the same view branch, so empty-state placeholders
+/// flash for ~50ms (or longer if a parent view does async setup
+/// before binding) on every fresh detail-view appearance.
+///
+/// `LoaderPhase` distinguishes the two without making callers
+/// remember to inspect `initialDataLoaded`:
+///
+/// ```swift
+/// switch loader.phase {
+/// case .loading:        ProgressView()
+/// case .empty:          EmptyState()
+/// case .loaded(let d):  List(d) { row in … }
+/// }
+/// ```
+public enum LoaderPhase<Data> {
+    case loading
+    case empty
+    case loaded(Data)
+}
+
+/// Protocol the loader uses to decide whether loaded data is empty
+/// (and therefore should surface as `.empty` rather than `.loaded`).
+///
+/// `[T]` and `String` get conformances out of the box. Custom `Data`
+/// types (tuples, structs of aggregated values, etc.) that want to
+/// participate in `.empty` should adopt this protocol. Types that
+/// don't conform are always treated as non-empty when present —
+/// callers will only see `.loading` and `.loaded(data)`.
+public protocol LoaderEmptiness {
+    var isLoaderEmpty: Bool { get }
+}
+
+extension Array: LoaderEmptiness {
+    public var isLoaderEmpty: Bool { isEmpty }
+}
+
+extension String: LoaderEmptiness {
+    public var isLoaderEmpty: Bool { isEmpty }
+}
+
+extension Optional: LoaderEmptiness where Wrapped: LoaderEmptiness {
+    public var isLoaderEmpty: Bool {
+        switch self {
+        case .none: return true
+        case .some(let w): return w.isLoaderEmpty
+        }
+    }
 }
 
 // MARK: - BaoDataLoader
@@ -104,6 +192,33 @@ public final class BaoDataLoader<Data>: ObservableObject {
     /// lists.
     @Published public private(set) var error: Error?
 
+    /// View-facing trinary phase. The canonical `List(loader.data ?? [])`
+    /// shape collapses "still loading" and "loaded but empty" into the
+    /// same render — so views that show an empty-state placeholder
+    /// flash that placeholder for the duration of the first load. Prefer
+    /// this property:
+    ///
+    /// ```swift
+    /// switch loader.phase {
+    /// case .loading:       ProgressView()
+    /// case .empty:         EmptyState()
+    /// case .loaded(let d): List(d) { … }
+    /// }
+    /// ```
+    ///
+    /// The phase is derived from `initialDataLoaded` + `data`; it
+    /// always returns `.loading` until the first successful load lands.
+    /// `.empty` requires the loaded `Data` to satisfy `LoaderEmptiness`
+    /// — `[T]` and `String` get conformances out of the box; custom
+    /// `Data` types must adopt `LoaderEmptiness` to participate.
+    public var phase: LoaderPhase<Data> {
+        guard initialDataLoaded, let data else { return .loading }
+        if let empty = data as? LoaderEmptiness, empty.isLoaderEmpty {
+            return .empty
+        }
+        return .loaded(data)
+    }
+
     // MARK: - Configuration
 
     /// Gate for the loader: while `false`, no loads run and `initialDataLoaded`
@@ -126,7 +241,7 @@ public final class BaoDataLoader<Data>: ObservableObject {
     // MARK: - Private state
 
     private weak var client: JsBaoClient?
-    private var loadClosure: ((JsBaoClient) async throws -> Data)?
+    private var loadClosure: (@MainActor (JsBaoClient) async throws -> Data)?
     private var onErrorCallback: ((Error) -> Void)?
     private var subscriptions: [EventSubscription] = []
     private var reloadTask: Task<Void, Never>?
@@ -163,13 +278,17 @@ public final class BaoDataLoader<Data>: ObservableObject {
     ///     after every mutation).
     ///   - load: The load closure. Receives the client; returns the data.
     ///     Errors thrown here are caught, stored on `error`, and forwarded to
-    ///     `onError`.
+    ///     `onError`. The closure is `@MainActor`-isolated (it runs on the
+    ///     main actor, like the rest of this loader), so you can read
+    ///     `@MainActor` state — e.g. a sync `TypedModel` read like
+    ///     `todos.findAll()` — directly, without wrapping it in
+    ///     `await MainActor.run { … }`.
     ///   - onError: Optional error callback (called in addition to setting
     ///     `error`).
     public func bind(
         client: JsBaoClient?,
         subscribeTo: [LoaderTrigger] = [.onDocumentEvents],
-        load: @escaping (JsBaoClient) async throws -> Data,
+        load: @escaping @MainActor (JsBaoClient) async throws -> Data,
         onError: ((Error) -> Void)? = nil
     ) {
         // Tear down any prior binding before installing the new one.
@@ -255,9 +374,15 @@ public final class BaoDataLoader<Data>: ObservableObject {
     private func scheduleReload() {
         guard documentReady, !isPaused, loadClosure != nil else { return }
         reloadTask?.cancel()
-        let delay = debounceInterval
+        // The debounce exists to coalesce bursts of *reactive* reloads (model
+        // events). The FIRST load shouldn't pay it: delaying it 50ms is what
+        // makes a `.loading` ProgressView flash before instantly-available
+        // local CRDT data lands. Run load #0 immediately; debounce the rest.
+        let delay = initialDataLoaded ? debounceInterval : 0
         reloadTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
             guard !Task.isCancelled, let self else { return }
             await self.performLoad()
         }
@@ -351,6 +476,12 @@ public final class BaoDataLoader<Data>: ObservableObject {
                     }
                 }
                 subscriptions.append(sub)
+
+            case .onModelChange(let model):
+                let unsubscribe = model.subscribe {
+                    reloadAfterInitialLoad()
+                }
+                subscriptions.append(EventSubscription(cancel: unsubscribe))
 
             case .custom(let installer):
                 if let sub = installer(client, reloadAfterInitialLoad) {
