@@ -497,12 +497,11 @@ public final class DebugInspector: @unchecked Sendable {
                 // Use DocumentsAPI.create (not JsBaoClient.createDocument, which mints a UUID
                 // locally — your server requires ULIDs and rejects UUIDs with a 400). Letting
                 // the server pick the id is simplest and matches how the demo creates docs.
-                var opts: [String: Any] = [:]
-                if let title = body["title"] as? String, !title.isEmpty { opts["title"] = title }
-                if let tags = body["tags"] as? [String] { opts["tags"] = tags }
+                var opts = CreateDocumentOptions()
+                if let title = body["title"] as? String, !title.isEmpty { opts.title = title }
+                if let tags = body["tags"] as? [String] { opts.tags = tags }
                 let result = try await client.documents.create(options: opts)
-                let id = (result["metadata"] as? [String: Any])?["documentId"] as? String
-                    ?? result["documentId"] as? String ?? ""
+                let id = result.metadata?.objectValue?["documentId"]?.stringValue ?? ""
                 appState?.addSyncMessage("Inspector: created \(id.prefix(12))…")
                 await appState?.fetchDocuments()
                 return ["ok": true, "documentId": id]
@@ -514,7 +513,7 @@ public final class DebugInspector: @unchecked Sendable {
             case "doc/rename":
                 guard let id = body["documentId"] as? String,
                       let title = body["title"] as? String else { return ["ok": false, "error": "documentId + title required"] }
-                _ = try await client.documents.update(documentId: id, data: ["title": title])
+                _ = try await client.documents.update(documentId: id, data: UpdateDocumentData(title: title))
                 await appState?.fetchDocuments()
                 return ["ok": true]
             case "doc/close":
@@ -535,11 +534,10 @@ public final class DebugInspector: @unchecked Sendable {
                 let permission = (body["permission"] as? String) ?? "read-write"
                 // Migrated off the deprecated `sendInvitation` to `updatePermissions`
                 // (the deferred-grant flow), per the js-bao deprecation guidance.
-                _ = try await client.documents.updatePermissions(documentId: id, params: [
-                    "email": email,
-                    "permission": permission,
-                    "sendEmail": true,
-                ])
+                _ = try await client.documents.updatePermissions(
+                    documentId: id,
+                    params: .email(email, permission: permission, sendEmail: true)
+                )
                 return ["ok": true]
             case "doc/setPermission":
                 // Update an already-accepted user's permission on a document
@@ -552,7 +550,7 @@ public final class DebugInspector: @unchecked Sendable {
                 }
                 _ = try await client.documents.updatePermissions(
                     documentId: id,
-                    params: ["userId": userId, "permission": permission]
+                    params: .user(userId, permission: permission)
                 )
                 return ["ok": true]
             case "doc/revokePermission":
@@ -562,22 +560,23 @@ public final class DebugInspector: @unchecked Sendable {
                       let userId = body["userId"] as? String else {
                     return ["ok": false, "error": "documentId + userId required"]
                 }
-                _ = try await client.documents.removePermission(documentId: id, userId: userId)
+                _ = try await client.documents.removePermission(documentId: id, .userId(userId))
                 return ["ok": true]
             case "db/create":
-                // Minimum server contract is just `title`; `databaseType` is
-                // optional and only meaningful to apps that declare types.
-                var params: [String: Any] = [:]
-                if let title = body["title"] as? String, !title.isEmpty { params["title"] = title }
-                if let type = body["databaseType"] as? String, !type.isEmpty { params["databaseType"] = type }
-                guard params["title"] != nil else { return ["ok": false, "error": "title required"] }
-                let result = try await client.databases.create(params: params)
-                let id = result["databaseId"] as? String ?? result["id"] as? String ?? ""
-                return ["ok": true, "databaseId": id, "result": result]
+                // Minimum server contract is just `title`; `databaseType`
+                // defaults to `"default"` when the caller doesn't pick one.
+                guard let title = (body["title"] as? String), !title.isEmpty else {
+                    return ["ok": false, "error": "title required"]
+                }
+                let dbType = (body["databaseType"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "default"
+                let result = try await client.databases.create(
+                    params: CreateDatabaseParams(title: title, databaseType: dbType)
+                )
+                return ["ok": true, "databaseId": result.databaseId, "result": result.inspectorDict]
             case "db/rename":
                 guard let id = body["databaseId"] as? String,
                       let title = body["title"] as? String else { return ["ok": false, "error": "databaseId + title required"] }
-                _ = try await client.databases.update(databaseId: id, params: ["title": title])
+                _ = try await client.databases.update(databaseId: id, params: UpdateDatabaseParams(title: title))
                 return ["ok": true]
             case "db/delete":
                 guard let id = body["databaseId"] as? String else { return ["ok": false, "error": "databaseId required"] }
@@ -587,13 +586,12 @@ public final class DebugInspector: @unchecked Sendable {
                 guard let name = body["name"] as? String, !name.isEmpty else {
                     return ["ok": false, "error": "name required"]
                 }
-                let result = try await client.collections.create(params: ["name": name])
-                let id = result["collectionId"] as? String ?? result["id"] as? String ?? ""
-                return ["ok": true, "collectionId": id, "result": result]
+                let result = try await client.collections.create(params: CreateCollectionParams(name: name))
+                return ["ok": true, "collectionId": result.collectionId, "result": result.inspectorDict]
             case "col/rename":
                 guard let id = body["collectionId"] as? String,
                       let name = body["name"] as? String else { return ["ok": false, "error": "collectionId + name required"] }
-                _ = try await client.collections.update(collectionId: id, params: ["name": name])
+                _ = try await client.collections.update(collectionId: id, params: UpdateCollectionParams(name: name))
                 return ["ok": true]
             case "col/delete":
                 guard let id = body["collectionId"] as? String else { return ["ok": false, "error": "collectionId required"] }
@@ -615,9 +613,13 @@ public final class DebugInspector: @unchecked Sendable {
                       let groupId = body["groupId"] as? String else {
                     return ["ok": false, "error": "collectionId + groupType + groupId required"]
                 }
-                var params: [String: Any] = ["groupType": groupType, "groupId": groupId]
-                if let p = body["permission"] as? String { params["permission"] = p }
-                _ = try await client.collections.grantGroupPermission(collectionId: cid, params: params)
+                let permission = (body["permission"] as? String) ?? "reader"
+                _ = try await client.collections.grantGroupPermission(
+                    collectionId: cid,
+                    params: GrantCollectionGroupPermissionParams(
+                        groupType: groupType, groupId: groupId, permission: permission
+                    )
+                )
                 return ["ok": true]
             case "col/revoke":
                 guard let cid = body["collectionId"] as? String,
@@ -632,9 +634,12 @@ public final class DebugInspector: @unchecked Sendable {
                       let userId = body["userId"] as? String else {
                     return ["ok": false, "error": "collectionId + userId required"]
                 }
-                var params: [String: Any] = ["userId": userId]
-                if let p = body["permission"] as? String { params["permission"] = p }
-                _ = try await client.collections.addMember(collectionId: cid, params: params)
+                let permission = (body["permission"] as? String)
+                    .flatMap { CollectionPermission(rawValue: $0) } ?? .reader
+                _ = try await client.collections.addMember(
+                    collectionId: cid,
+                    params: .user(userId, permission: permission)
+                )
                 return ["ok": true]
             case "col/removeMember":
                 guard let cid = body["collectionId"] as? String,
@@ -724,26 +729,31 @@ public final class DebugInspector: @unchecked Sendable {
                       let name = body["name"] as? String else {
                     return ["ok": false, "error": "databaseId + name required"]
                 }
-                let options = body["options"] as? [String: Any]
-                let raw = try await client.databases.executeOperation(
+                var options: ExecuteOperationOptions?
+                if let o = body["options"] as? [String: Any], !o.isEmpty {
+                    options = ExecuteOperationOptions(
+                        params: inspectorJSONValue(from: o["params"]),
+                        limit: o["limit"] as? Int,
+                        cursor: o["cursor"] as? String,
+                        timing: o["timing"] as? Bool
+                    )
+                }
+                // `executeOperation` now returns a typed `JSONValue`; project it
+                // back to a JSONSerialization-safe `Any` for the UI.
+                let raw = inspectorAny(try await client.databases.executeOperation(
                     databaseId: id, name: name, options: options
-                )
+                ))
                 // Normalize the common "returns rows" shape ({ data: [...] })
                 // vs "returns an array" vs "returns a scalar". The UI renders
                 // `rows` as a table when present; otherwise it falls back to
                 // the raw value under `result`.
                 var rows: [[String: Any]] = []
-                var resultBlob: Any = NSNull()
-                if let dict = raw as? [String: Any] {
-                    if let d = dict["data"] as? [[String: Any]] { rows = d }
-                    resultBlob = dict
+                if let dict = raw as? [String: Any], let d = dict["data"] as? [[String: Any]] {
+                    rows = d
                 } else if let arr = raw as? [[String: Any]] {
                     rows = arr
-                    resultBlob = arr
-                } else {
-                    resultBlob = raw
                 }
-                return ["ok": true, "rows": rows, "result": resultBlob]
+                return ["ok": true, "rows": rows, "result": raw]
             case "record/delete":
                 guard let modelName = body["model"] as? String,
                       let docId = body["documentId"] as? String,
@@ -1155,8 +1165,7 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client else { return [:] }
         do {
             let res = try await client.collections.list(options: PaginationOptions(limit: 100))
-            let items = (res["items"] ?? res["collections"]) as? [[String: Any]] ?? []
-            return ["items": items]
+            return ["items": res.items.map { $0.inspectorDict }]
         } catch {
             return ["items": [], "error": error.localizedDescription]
         }
@@ -1190,21 +1199,20 @@ public final class DebugInspector: @unchecked Sendable {
         }
 
         // 2. Fetch every collection's member docs in parallel.
-        let collectionsRes: [String: Any]
+        let collections: [CollectionInfo]
         do {
-            collectionsRes = try await client.collections.list(options: PaginationOptions(limit: 100))
+            collections = try await client.collections.list(options: PaginationOptions(limit: 100)).items
         } catch {
             return ["items": [], "error": error.localizedDescription]
         }
-        let collections = (collectionsRes["items"] ?? collectionsRes["collections"]) as? [[String: Any]] ?? []
 
         // docId → merged entry (title, tags, [collectionIds])
         var byDocId: [String: [String: Any]] = [:]
 
-        await withTaskGroup(of: (String, [[String: Any]]).self) { group in
+        await withTaskGroup(of: (String, [CollectionDocumentInfo]).self) { group in
             for c in collections {
-                guard let cid = (c["collectionId"] as? String) ?? (c["id"] as? String),
-                      !cid.isEmpty else { continue }
+                let cid = c.collectionId
+                guard !cid.isEmpty else { continue }
                 group.addTask { [weak self] in
                     guard let self, let client = self.client else { return (cid, []) }
                     do {
@@ -1212,10 +1220,7 @@ public final class DebugInspector: @unchecked Sendable {
                             collectionId: cid,
                             options: PaginationOptions(limit: 200)
                         )
-                        let items = (resp["items"] as? [[String: Any]])
-                            ?? (resp["documents"] as? [[String: Any]])
-                            ?? []
-                        return (cid, items)
+                        return (cid, resp.items)
                     } catch {
                         return (cid, [])
                     }
@@ -1223,7 +1228,8 @@ public final class DebugInspector: @unchecked Sendable {
             }
             for await (cid, items) in group {
                 for item in items {
-                    guard let docId = item["documentId"] as? String, !docId.isEmpty else { continue }
+                    let docId = item.documentId
+                    guard !docId.isEmpty else { continue }
                     // Skip docs the user has direct access to — they
                     // belong in the regular Documents section.
                     if directDocIds.contains(docId) { continue }
@@ -1235,9 +1241,9 @@ public final class DebugInspector: @unchecked Sendable {
                     } else {
                         byDocId[docId] = [
                             "id": docId,
-                            "title": item["title"] as? String ?? "",
-                            "tags": item["tags"] as? [String] ?? [],
-                            "permission": item["permission"] as? String ?? "",
+                            "title": item.title ?? "",
+                            "tags": item.tags ?? [],
+                            "permission": item.permission?.rawValue ?? "",
                             "collectionIds": [cid],
                         ]
                     }
@@ -1294,7 +1300,7 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client else { return [:] }
         do {
             let items = try await client.databases.list()
-            return ["items": items]
+            return ["items": items.map { $0.inspectorDict }]
         } catch {
             return ["items": [], "error": error.localizedDescription]
         }
@@ -1305,7 +1311,7 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client, !databaseId.isEmpty else { return [:] }
         do {
             let items = try await client.databases.listOperations(databaseId: databaseId)
-            return ["items": items]
+            return ["items": items.map { $0.inspectorDict }]
         } catch {
             return ["items": [], "error": error.localizedDescription]
         }
@@ -1335,7 +1341,7 @@ public final class DebugInspector: @unchecked Sendable {
             let fields = try await client.databases.describe(
                 databaseId: databaseId, modelName: modelName
             )
-            return ["fields": fields]
+            return ["fields": fields.map { $0.inspectorDict }]
         } catch {
             return ["fields": [] as [[String: Any]], "error": error.localizedDescription]
         }
@@ -1349,8 +1355,7 @@ public final class DebugInspector: @unchecked Sendable {
                 collectionId: collectionId,
                 options: PaginationOptions(limit: 100)
             )
-            let items = (res["items"] ?? res["documents"]) as? [[String: Any]] ?? []
-            return ["items": items]
+            return ["items": res.items.map { $0.inspectorDict }]
         } catch {
             return ["items": [], "error": error.localizedDescription]
         }
@@ -1361,7 +1366,7 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client, !collectionId.isEmpty else { return [:] }
         do {
             let access = try await client.collections.getAccess(collectionId: collectionId)
-            return ["access": access]
+            return ["access": access.inspectorDict]
         } catch {
             return ["access": [:], "error": error.localizedDescription]
         }
@@ -1372,6 +1377,7 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client, !documentId.isEmpty else { return [] }
         do {
             return try await client.documents.blobs(documentId: documentId).list(limit: 100)
+                .items.map { $0.inspectorDict }
         } catch {
             return []
         }
@@ -1395,8 +1401,8 @@ public final class DebugInspector: @unchecked Sendable {
         let filename: String?
         do {
             let meta = try await ctx.get(blobId: blobId)
-            contentType = (meta["contentType"] as? String) ?? "application/octet-stream"
-            filename = meta["filename"] as? String
+            contentType = meta.contentType ?? "application/octet-stream"
+            filename = meta.filename
         } catch {
             writer.respondText("blob metadata failed: \(error)", status: 502)
             return
@@ -1423,13 +1429,13 @@ public final class DebugInspector: @unchecked Sendable {
         guard let client, !documentId.isEmpty else { return [:] }
         var result: [String: Any] = ["documentId": documentId]
         if let perms = try? await client.documents.getPermissions(documentId: documentId) {
-            result["permissions"] = perms
+            result["permissions"] = perms.map { $0.inspectorDict }
         } else {
             result["permissions"] = []
         }
         // Migrated off the deprecated `listInvitations` to `listPendingInvitations`.
         if let invites = try? await client.documents.listPendingInvitations(documentId: documentId) {
-            result["invitations"] = invites
+            result["invitations"] = invites.map { $0.inspectorDict }
         } else {
             result["invitations"] = []
         }

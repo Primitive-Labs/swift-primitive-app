@@ -98,9 +98,9 @@ public struct InspectableSQLColumn: Sendable {
 /// One model surfaced to the debug inspector.
 ///
 /// The host app exposes one of these per model it wants the inspector to render. We erase
-/// the record type here (`[String: Any]` round-trip) so the inspector stays generic — apps
-/// using the legacy `BaoModel<T>` path AND apps using the runtime-schema
-/// `DynamicModel` / `TypedModel<T>` path both produce the same shape.
+/// the record type here (`[String: Any]` round-trip) so the inspector stays generic — every
+/// model (codegen'd `PrimitiveModel` struct or a hand-built `DynamicModel`) produces the
+/// same shape.
 public struct InspectableModel: @unchecked Sendable {
 
     public let name: String
@@ -122,9 +122,8 @@ public struct InspectableModel: @unchecked Sendable {
     public let createWith: (@MainActor ([String: Any]) throws -> String)?
 
     /// Optional — handle to the in-memory SQL projection that backs this model's
-    /// queries. Wired up by the `DynamicModel` factory (since legacy `BaoModel<T>`
-    /// uses a different mirror lifecycle); the inspector's "Memory SQL" tab only
-    /// shows models that surface one of these.
+    /// queries. Wired up by the `DynamicModel` factory; the inspector's "Memory
+    /// SQL" tab only shows models that surface one of these.
     public let memoryDB: InspectableMemoryDB?
 
     public init(
@@ -147,78 +146,24 @@ public struct InspectableModel: @unchecked Sendable {
 }
 
 /// Conformance opt-in for a `PrimitiveAppState` subclass that wants the debug inspector to
-/// display its models. The base class returns `[]`; override in your subclass to surface
-/// your models. See `DemoAppState` in the demo for the canonical shape.
+/// display its models. The base class surfaces every model in the client's shared store;
+/// override in your subclass to filter or supplement that list.
 ///
-/// Mix of `BaoModel<T>` (legacy typed) and `TypedModel<T>` / `DynamicModel` (runtime
-/// schema) is supported — each has its own `InspectableModel.from(...)` factory. The
-/// inspector itself sees only the erased `[[String: Any]]` rows and doesn't care which
-/// API produced them.
+/// Both codegen'd `PrimitiveModel` structs (surfaced automatically via the shared store)
+/// and hand-built `DynamicModel`s feed `InspectableModel.from(...)`. The inspector itself
+/// sees only the erased `[[String: Any]]` rows and doesn't care which API produced them.
 public protocol InspectableModelHost: AnyObject {
     @MainActor var inspectableModels: [InspectableModel] { get }
 }
 
 /// Default conformance — the base class's `inspectableModels` property reads
-/// from the registry populated by `makeTypedModel(...)`, so every
+/// the client's shared cross-document model store, so every
 /// `PrimitiveAppState` (and subclass) is an `InspectableModelHost` out of the
 /// box. Subclasses can still `override inspectableModels` if they need custom
 /// logic.
 extension PrimitiveAppState: InspectableModelHost {}
 
-// MARK: - Legacy BaoModel<T> bridge
-
-public extension InspectableModel {
-    /// Build an `InspectableModel` from a typed legacy `BaoModel<T>`. The record type
-    /// supplies the field definitions via its `BaoModelRecord` conformance; `loadAll`
-    /// serializes records through `toFields()` so the inspector gets a generic
-    /// `[[String: Any]]` without needing to know `T`. `deleteById` is wired to
-    /// `BaoModel.delete(_:)`.
-    @MainActor
-    static func from<T: BaoModelRecord>(
-        _ model: BaoModel<T>,
-        documentId: String,
-        name: String? = nil
-    ) -> InspectableModel {
-        let fields: [InspectableField] = T.fields.map { def in
-            InspectableField(
-                name: def.name,
-                kind: kindForLegacy(def.type),
-                optional: def.optional
-            )
-        }
-        return InspectableModel(
-            name: name ?? T.modelName,
-            documentId: documentId,
-            fields: fields,
-            loadAll: { model.findAll().map { $0.toFields() } },
-            deleteById: { id in model.delete(id) },
-            createWith: { values in
-                // Legacy BaoModelRecord builds itself from a `[String: Any]` via
-                // `init(fields:)`. Generate an id if the caller didn't supply one.
-                var dict = values
-                let supplied = dict["id"] as? String
-                if supplied == nil || supplied?.isEmpty == true {
-                    dict["id"] = generateULID()
-                }
-                let record = T(fields: dict)
-                model.create(record)
-                return record.id
-            }
-        )
-    }
-
-    /// Map the legacy `BaoModelRecord` `FieldType` to the inspector's `Kind`.
-    private static func kindForLegacy(_ type: FieldType) -> InspectableField.Kind {
-        switch type {
-        case .string:  return .string
-        case .number:  return .number
-        case .boolean: return .boolean
-        case .json:    return .json
-        }
-    }
-}
-
-// MARK: - Runtime-schema bridge (DynamicModel / TypedModel<T>)
+// MARK: - Runtime-schema bridge (DynamicModel)
 
 public extension InspectableModel {
 
@@ -321,17 +266,6 @@ public extension InspectableModel {
             },
             memoryDB: memoryDB
         )
-    }
-
-    /// Convenience overload — `TypedModel<T>` is a thin façade over a `DynamicModel`,
-    /// so we just unwrap it.
-    @MainActor
-    static func from<T: PrimitiveModel>(
-        _ model: TypedModel<T>,
-        documentId: String,
-        name: String? = nil
-    ) -> InspectableModel {
-        return from(model.dynamic, documentId: documentId, name: name ?? T.modelName)
     }
 
     /// Map the runtime-schema `PrimitiveFieldType` to the inspector's `Kind`.

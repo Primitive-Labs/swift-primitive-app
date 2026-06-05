@@ -126,6 +126,12 @@ open class PrimitiveAppState: ObservableObject {
         ))
         self.client = client
 
+        // Wire the process-wide default the codegen'd model facade reads
+        // (`TaskRecord.query()`, `record.save(in:)`, `TaskRecord.subscribe`).
+        // Must happen before any generated `Model.*` call, so we do it as
+        // soon as the client exists.
+        JsBaoClient.configureDefault(client)
+
         setupEventSubscriptions(client)
         authManager.attach(to: client)
 
@@ -155,7 +161,7 @@ open class PrimitiveAppState: ObservableObject {
     ///
     /// Subclasses may override to run app-specific setup after the
     /// websocket is up (e.g. resolve a per-user singleton doc, bind
-    /// TypedModels). Call `super.connectClient()` first so the base
+    /// models). Call `super.connectClient()` first so the base
     /// class still connects, hydrates `userName`, and fetches the
     /// document list.
     open func connectClient() async {
@@ -175,9 +181,10 @@ open class PrimitiveAppState: ObservableObject {
         }
 
         if let me = try? await client.me.get() {
-            userName = me["name"] as? String ?? ""
-            userEmail = me["email"] as? String ?? ""
-            userAvatarUrl = me["avatarUrl"] as? String ?? me["picture"] as? String
+            // `me.get()` is now a typed `UserProfile` (was a raw dict).
+            userName = me.name ?? ""
+            userEmail = me.email
+            userAvatarUrl = me.avatarUrl
             if userName.isEmpty { userName = userEmail }
         }
 
@@ -289,8 +296,8 @@ open class PrimitiveAppState: ObservableObject {
     ///
     /// Use this when the caller needs the app's post-open state to be
     /// fully in place before continuing — e.g. the debug inspector
-    /// opening a doc over IPC and then querying the just-rebound
-    /// `BaoModel` / `TypedModel` instances.
+    /// opening a doc over IPC and then querying the model facade for the
+    /// just-connected document.
     @MainActor
     public func selectDocumentAwaiting(_ docId: String) async {
         guard let client else { return }
@@ -338,12 +345,13 @@ open class PrimitiveAppState: ObservableObject {
     /// Called after a document is successfully opened — the **preferred**
     /// override point.
     ///
-    /// You get the live `YDocument` handle, so you can immediately bind a
-    /// `TypedModel<T>` without re-opening:
+    /// The document is now connected to the client's shared model store, so
+    /// the codegen'd model facade can read it immediately — no per-doc model
+    /// binding needed:
     ///
     /// ```swift
     /// override func onDocumentOpened(doc: YDocument, documentId: String) async {
-    ///     todos = makeTypedModel(doc: doc, documentId: documentId)
+    ///     todos = TodoItem.query()   // cross-doc; or scope with QueryOptions(documents:)
     /// }
     /// ```
     ///
@@ -356,11 +364,11 @@ open class PrimitiveAppState: ObservableObject {
 
     /// ⚠️ LEGACY / NON-BINDING hook — kept only for back-compat.
     ///
-    /// This overload does **NOT** hand you the `YDocument`, so it is the
-    /// WRONG place to bind `TypedModel`s. Overriding *this* instead of the
-    /// `doc:documentId:` overload above is a common mistake: it compiles,
-    /// runs, and your models silently never bind — with no error to point
-    /// at the cause.
+    /// This overload does **NOT** hand you the `YDocument`, so it fires
+    /// before you have a handle to seed initial state from. Overriding
+    /// *this* instead of the `doc:documentId:` overload above is a common
+    /// mistake: it compiles and runs, but you never get the doc handle —
+    /// with no error to point at the cause.
     ///
     /// ✅ To bind models, override `onDocumentOpened(doc:documentId:)` — it
     /// gives you the live `YDocument` directly. Only override THIS one if
@@ -378,64 +386,30 @@ open class PrimitiveAppState: ObservableObject {
         }
     }
 
-    // MARK: - Inspectable model registry
+    // MARK: - Inspectable models
 
-    /// One entry per registered `TypedModel`/`DynamicModel`. Stored as a weak
-    /// builder closure so the underlying model can deallocate when the host
-    /// drops its reference (e.g. doc closed) — the next read of
-    /// `inspectableModels` compacts dead entries away.
-    fileprivate struct RegisteredInspectable {
-        let documentId: String
-        let name: String
-        let build: @MainActor () -> InspectableModel?
-    }
-
-    fileprivate var inspectableRegistry: [RegisteredInspectable] = []
-
-    /// Every model registered via `makeTypedModel(...)`, surfaced to the debug
-    /// inspector. Subclasses may `override` for custom behaviour; the default
-    /// covers the common "register-on-construction" path so most hosts don't
-    /// need to write any inspector glue.
+    /// Every model the client is mirroring, across all open documents,
+    /// surfaced to the debug inspector. Pulled from the client's shared
+    /// cross-document store (`inspectableSharedMembers`) — one entry per
+    /// `(model, open document)` pair — so the inspector reflects exactly
+    /// what the codegen'd `Model.*` facade reads and writes. No per-doc
+    /// model binding or registration is required; a model appears here as
+    /// soon as it's been queried or written once (which registers it with
+    /// the shared store).
+    ///
+    /// Subclasses may `override` to filter or supplement this list (e.g.
+    /// hide internal models, or add a `DynamicModel` not bound through the
+    /// facade).
     @MainActor
     open var inspectableModels: [InspectableModel] {
-        var alive: [RegisteredInspectable] = []
-        var out: [InspectableModel] = []
-        for entry in inspectableRegistry {
-            if let m = entry.build() {
-                alive.append(entry)
-                out.append(m)
-            }
+        guard let client else { return [] }
+        return client.inspectableSharedMembers().map { member in
+            InspectableModel.from(
+                member.model,
+                documentId: member.documentId,
+                name: member.modelName
+            )
         }
-        if alive.count != inspectableRegistry.count {
-            inspectableRegistry = alive
-        }
-        return out
-    }
-
-    /// Construct a `TypedModel<T>` and register it with the inspector in one
-    /// step. Replaces any prior entry with the same `(documentId, modelName)`
-    /// so doc-reopen and doc-swap cases produce a single live entry rather
-    /// than stacking duplicates.
-    @MainActor
-    public func makeTypedModel<T: PrimitiveModel>(
-        doc: YDocument,
-        documentId: String,
-        name: String? = nil
-    ) -> TypedModel<T> {
-        let model = TypedModel<T>(doc: doc)
-        let modelName = name ?? T.modelName
-        inspectableRegistry.removeAll {
-            $0.documentId == documentId && $0.name == modelName
-        }
-        inspectableRegistry.append(RegisteredInspectable(
-            documentId: documentId,
-            name: modelName,
-            build: { [weak model] in
-                guard let model else { return nil }
-                return .from(model, documentId: documentId, name: modelName)
-            }
-        ))
-        return model
     }
 
     // MARK: - Auxiliary documents (multi-doc apps)
@@ -454,19 +428,19 @@ open class PrimitiveAppState: ObservableObject {
     // DocumentManager registers it for sync, but **does not touch**
     // `selectedDocId` or call `onDocumentOpened`. The caller owns the
     // lifecycle — typically a SwiftUI detail view that opens in `.task`
-    // and closes in `.onDisappear`. Bind `TypedModel<T>` against the
-    // returned YDocument via `makeTypedModel(...)` so the model still
-    // registers with the debug inspector.
+    // and closes in `.onDisappear`. Once the doc is open, read/write its
+    // records through the codegen'd model facade scoped to that doc —
+    // `TodoItem.query(options: QueryOptions(documents: [documentId]))`
+    // for reads, `try TodoItem(...).save(in: documentId)` for writes.
     //
     // Usage:
     //
     //     // In your TodoListDetailView:
     //     .task {
-    //         let (_, todos) = try await appState.openAuxiliaryDoc(
-    //             documentId,
-    //             modelType: TodoItem.self
+    //         try await appState.openAuxiliaryDoc(documentId)
+    //         self.todos = TodoItem.query(
+    //             options: QueryOptions(documents: [documentId])
     //         )
-    //         self.todos = todos
     //     }
     //     .onDisappear {
     //         Task { await appState.closeAuxiliaryDoc(documentId) }
@@ -496,27 +470,6 @@ open class PrimitiveAppState: ObservableObject {
             waitForLoad: waitForLoad,
             enableNetworkSync: enableNetworkSync
         ))
-    }
-
-    /// Convenience: open an auxiliary doc AND bind a single
-    /// `TypedModel<T>` in one call. Returns `(doc, model)` so the
-    /// caller can store both — store `model` for reads/writes, store
-    /// `doc` only if you need to bind additional `TypedModel`s.
-    @MainActor
-    public func openAuxiliaryDoc<T: PrimitiveModel>(
-        _ documentId: String,
-        modelType: T.Type,
-        modelName: String? = nil,
-        waitForLoad: WaitForLoadMode = .localIfAvailableElseNetwork,
-        enableNetworkSync: Bool = true
-    ) async throws -> (doc: YDocument, model: TypedModel<T>) {
-        let doc = try await openAuxiliaryDoc(
-            documentId,
-            waitForLoad: waitForLoad,
-            enableNetworkSync: enableNetworkSync
-        )
-        let model: TypedModel<T> = makeTypedModel(doc: doc, documentId: documentId, name: modelName)
-        return (doc, model)
     }
 
     /// Close an auxiliary doc that was opened via `openAuxiliaryDoc`.

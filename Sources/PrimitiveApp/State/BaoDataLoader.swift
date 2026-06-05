@@ -15,11 +15,11 @@ import JsBaoClient
 /// to typed workflow events, or driving a reload from your own publisher.
 public enum LoaderTrigger {
     /// Reload on `JsBaoEvent.sync` — fires whenever a document finishes (re)syncing.
-    /// Useful for `BaoModel<T>`-backed loaders.
+    /// Useful for model-backed loaders.
     case onSync
 
     /// Reload on `JsBaoEvent.remoteUpdate` — fires whenever a remote write lands
-    /// in any open document. Pair with `.onSync` for full BaoModel reactivity.
+    /// in any open document. Pair with `.onSync` for full model reactivity.
     case onRemoteUpdate
 
     /// Reload on `JsBaoEvent.documentLoaded` and `JsBaoEvent.documentClosed`.
@@ -30,16 +30,30 @@ public enum LoaderTrigger {
     /// REST-backed loaders that need to refresh after reconnect.
     case onConnect
 
-    /// Reload whenever a specific `TypedModel<T>` / `DynamicModel` records
-    /// an add, update, or delete. The closest analogue to JS-bao's per-model
-    /// `Model.subscribe` reactivity — fires for both local and remote writes,
-    /// debounced like the other triggers.
+    /// Reload whenever a specific `DynamicModel` records an add, update, or
+    /// delete. Fires for both local and remote writes, debounced like the
+    /// other triggers.
     ///
-    /// Prefer this over `.onSync` + `.onRemoteUpdate` when the loader is
-    /// reading from a single model: the model-level subscription is tighter
-    /// (no spurious reloads from unrelated models in the same doc) and
-    /// matches the JS pattern of binding views to model events.
+    /// For codegen'd models, prefer ``onModel(subscribe:)`` — it binds to the
+    /// model's cross-document shared store rather than a single `DynamicModel`
+    /// instance.
     case onModelChange(ModelSubscribable)
+
+    /// Reload whenever a codegen'd model's shared store records an add,
+    /// update, or delete — across every open document. Pass the generated
+    /// `Model.subscribe` static directly:
+    ///
+    /// ```swift
+    /// loader.bind(client: client, subscribeTo: [.onModel(subscribe: TaskRecord.subscribe)]) { _ in
+    ///     TaskRecord.findAll()
+    /// }
+    /// ```
+    ///
+    /// The closest analogue to JS-bao's per-model `Model.subscribe`
+    /// reactivity — tighter than `.onSync` + `.onRemoteUpdate` (no spurious
+    /// reloads from unrelated models) and matches the JS pattern of binding
+    /// views to model events.
+    case onModel(subscribe: (@escaping () -> Void) -> () -> Void)
 
     /// Caller-supplied subscription installer. Receive the connected client and
     /// a `reload` callback; install whatever event subscription you want and
@@ -48,9 +62,10 @@ public enum LoaderTrigger {
     case custom((JsBaoClient, @escaping () -> Void) -> EventSubscription?)
 }
 
-/// Anything the loader can subscribe to for `.onModelChange`. Both
-/// `TypedModel<T>` and `DynamicModel` conform via retroactive extensions
-/// below — keeps `swift-client` from having to know about the loader.
+/// Anything the loader can subscribe to for `.onModelChange`. `DynamicModel`
+/// conforms via the retroactive extension below — keeps `swift-client` from
+/// having to know about the loader. (Codegen'd models use ``LoaderTrigger/onModel(subscribe:)``
+/// instead, which takes the generated `Model.subscribe` static.)
 public protocol ModelSubscribable: AnyObject {
     /// Register a callback that fires after any add, update, or delete on
     /// the model. Returns an unsubscribe closure.
@@ -58,17 +73,8 @@ public protocol ModelSubscribable: AnyObject {
     func subscribe(_ callback: @escaping () -> Void) -> () -> Void
 }
 
-// `DynamicModel.subscribe(...)` already matches the protocol signature
-// exactly. `TypedModel<T>` doesn't expose `subscribe` at the typed layer,
-// so the extension forwards through `dynamic`.
+// `DynamicModel.subscribe(...)` already matches the protocol signature exactly.
 extension DynamicModel: ModelSubscribable {}
-
-extension TypedModel: ModelSubscribable {
-    @discardableResult
-    public func subscribe(_ callback: @escaping () -> Void) -> () -> Void {
-        return dynamic.subscribe(callback)
-    }
-}
 
 // MARK: - LoaderPhase
 
@@ -133,14 +139,14 @@ extension Optional: LoaderEmptiness where Wrapped: LoaderEmptiness {
 ///
 /// Generic over `Data` so callers pick the return shape — a single record,
 /// `[T]`, a tuple/struct of derived values, anything. The `load` closure is
-/// arbitrary, so the same loader works for `BaoModel<T>` records, raw REST
+/// arbitrary, so the same loader works for model records, raw REST
 /// resources, or multi-source aggregations.
 ///
 /// Differences from JS:
 /// - Drops the second `Q` (queryParams) generic. Filter state lives in the
 ///   View as `@State`; trigger reloads from `.onChange(of:)`.
 /// - `subscribeTo` takes a `[LoaderTrigger]` enum array instead of model
-///   classes (Swift `BaoModel<T>` doesn't have JS's per-class pub/sub; the
+///   classes (the Swift model facade's per-class pub/sub is `Model.subscribe`; the
 ///   equivalent reactivity is on `JsBaoClient.events`).
 /// - Settable `documentReady` / `isPaused` / `debounceInterval` properties so
 ///   you can flip them mid-flight without rebinding.
@@ -280,8 +286,8 @@ public final class BaoDataLoader<Data>: ObservableObject {
     ///     Errors thrown here are caught, stored on `error`, and forwarded to
     ///     `onError`. The closure is `@MainActor`-isolated (it runs on the
     ///     main actor, like the rest of this loader), so you can read
-    ///     `@MainActor` state — e.g. a sync `TypedModel` read like
-    ///     `todos.findAll()` — directly, without wrapping it in
+    ///     `@MainActor` state — e.g. a sync model read like
+    ///     `TaskRecord.findAll()` — directly, without wrapping it in
     ///     `await MainActor.run { … }`.
     ///   - onError: Optional error callback (called in addition to setting
     ///     `error`).
@@ -479,6 +485,12 @@ public final class BaoDataLoader<Data>: ObservableObject {
 
             case .onModelChange(let model):
                 let unsubscribe = model.subscribe {
+                    reloadAfterInitialLoad()
+                }
+                subscriptions.append(EventSubscription(cancel: unsubscribe))
+
+            case .onModel(let subscribe):
+                let unsubscribe = subscribe {
                     reloadAfterInitialLoad()
                 }
                 subscriptions.append(EventSubscription(cancel: unsubscribe))
