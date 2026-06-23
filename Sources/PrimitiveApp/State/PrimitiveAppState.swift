@@ -62,7 +62,7 @@ open class PrimitiveAppState: ObservableObject {
     private var statusSubscription: EventSubscription?
     private var syncSubscription: EventSubscription?
     private var docLoadedSubscription: EventSubscription?
-    private var remoteUpdateSubscription: EventSubscription?
+    private var documentSyncStateSubscription: EventSubscription?
 
     public init() {}
 
@@ -236,10 +236,13 @@ open class PrimitiveAppState: ObservableObject {
             }
         }
 
-        remoteUpdateSubscription = client.events.on(.remoteUpdate) { [weak self] (event: RemoteUpdateEvent) in
+        documentSyncStateSubscription = client.events.on(.documentSyncStateChanged) { [weak self] (event: DocumentSyncStateChangedEvent) in
             Task { @MainActor in
-                guard let self, event.documentId == self.selectedDocId else { return }
-                self.onRemoteUpdate(documentId: event.documentId)
+                guard let self,
+                      event.documentId == self.selectedDocId,
+                      event.state == "synced"
+                else { return }
+                self.onDocumentSyncStateChanged(documentId: event.documentId, state: event.state)
             }
         }
     }
@@ -247,8 +250,9 @@ open class PrimitiveAppState: ObservableObject {
     /// Called when a document finishes syncing. Override to reload content.
     open func onDocumentSynced(documentId: String) {}
 
-    /// Called when a remote update is received. Override to reload content.
-    open func onRemoteUpdate(documentId: String) {}
+    /// Called when document sync state changes after a remote write lands.
+    /// Override to reload content.
+    open func onDocumentSyncStateChanged(documentId: String, state: String) {}
 
     // MARK: - Documents
 
@@ -416,7 +420,7 @@ open class PrimitiveAppState: ObservableObject {
     //
     // `selectDocumentAwaiting(_:)` is the single-selected-doc lifecycle:
     // it closes the previous selection before opening the new one,
-    // updates `selectedDocId`, routes sync/remoteUpdate hooks, and fires
+    // updates `selectedDocId`, routes sync-state hooks, and fires
     // `onDocumentOpened(doc:documentId:)`. That fits "one document per
     // user" apps. It doesn't fit apps that keep one ambient doc open
     // (e.g. a library / index doc) while opening and closing N other
@@ -489,7 +493,7 @@ open class PrimitiveAppState: ObservableObject {
         statusSubscription?.cancel()
         syncSubscription?.cancel()
         docLoadedSubscription?.cancel()
-        remoteUpdateSubscription?.cancel()
+        documentSyncStateSubscription?.cancel()
         if let client { await client.destroy() }
     }
 }

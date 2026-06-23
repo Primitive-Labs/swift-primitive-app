@@ -49,6 +49,26 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         case error(String)
     }
 
+    /// Which sign-in methods the server has configured for this app
+    /// (`GET /oauth-config`). Loaded on `attach`; `PrimitiveLoginView`
+    /// renders its buttons from this, so apps don't hardcode provider
+    /// flags. Nil while loading — the login view shows email-only until
+    /// it resolves.
+    public struct AuthProviders: Equatable, Sendable {
+        public var google: Bool
+        public var apple: Bool
+        public var emailOtp: Bool
+        public var magicLink: Bool
+
+        /// Conservative fallback when the config fetch fails: email only.
+        public static let emailOnly = AuthProviders(
+            google: false, apple: false,
+            emailOtp: true, magicLink: true
+        )
+    }
+
+    @Published public private(set) var availableProviders: AuthProviders?
+
     // MARK: - Private
 
     private weak var client: JsBaoClient?
@@ -67,6 +87,24 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// Attach to a JsBaoClient and listen for auth events.
     public func attach(to client: JsBaoClient) {
         self.client = client
+
+        // Load the server's configured sign-in methods so the login view
+        // can render the right buttons. Email affordances stay on while
+        // loading / on failure (AuthProviders.emailOnly fallback).
+        Task { @MainActor [weak self] in
+            do {
+                let config = try await client.auth.getAuthConfig()
+                self?.availableProviders = AuthProviders(
+                    google: config.hasOAuth,
+                    apple: config.hasApple,
+                    emailOtp: config.otpEnabled,
+                    magicLink: config.magicLinkEnabled
+                )
+            } catch {
+                logger.warning("Auth config fetch failed; falling back to email-only login: \(error.localizedDescription)")
+                self?.availableProviders = .emailOnly
+            }
+        }
 
         // Check if already authenticated (e.g. persisted token)
         let state = client.getAuthState()
@@ -158,6 +196,70 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         } catch {
             logger.error("OAuth error: \(error.localizedDescription)")
             authError = "OAuth failed: \(error.localizedDescription)"
+            isAuthenticating = false
+            loginState = .error(error.localizedDescription)
+        }
+    }
+
+    /// Native Google sign-in (#928) via the client's
+    /// `signInWithGoogle(...)` — system auth sheet, Google-style custom-scheme
+    /// redirect, server-side code exchange. The redirect URI resolves from a
+    /// bundled `GoogleService-Info.plist` when `redirectUri` is nil; pass it
+    /// explicitly to test without bundling the plist.
+    public func signInWithGoogle(redirectUri: String? = nil) async {
+        guard let client else {
+            authError = "Client not initialized"
+            return
+        }
+
+        isAuthenticating = true
+        loginState = .authenticating
+        authError = nil
+
+        do {
+            let result = try await client.signInWithGoogle(redirectUri: redirectUri)
+            logger.info("Google sign-in done: userId=\(result.userId ?? "nil") isNewUser=\(result.isNewUser)")
+            // .authSuccess event updates isAuthenticated
+        } catch OAuthSignInError.cancelled {
+            logger.info("Google sign-in cancelled by user")
+            isAuthenticating = false
+            loginState = .initial
+        } catch {
+            logger.error("Google sign-in error: \(error.localizedDescription)")
+            authError = error.localizedDescription
+            isAuthenticating = false
+            loginState = .error(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Sign in with Apple
+
+    /// Native Sign in with Apple (#409 port) via the client's
+    /// `signInWithApple()` — system Apple ID sheet, identity-token exchange
+    /// against `POST /auth/apple/callback`. Requires the app's
+    /// "Sign in with Apple" entitlement and the server's `appleAudiences`
+    /// to include this app's bundle id.
+    public func signInWithApple() async {
+        guard let client else {
+            authError = "Client not initialized"
+            return
+        }
+
+        isAuthenticating = true
+        loginState = .authenticating
+        authError = nil
+
+        do {
+            let result = try await client.signInWithApple()
+            logger.info("Apple sign-in done: userId=\(result.userId ?? "nil") isNewUser=\(result.isNewUser)")
+            // .authSuccess event updates isAuthenticated
+        } catch AppleSignInError.cancelled {
+            logger.info("Apple sign-in cancelled by user")
+            isAuthenticating = false
+            loginState = .initial
+        } catch {
+            logger.error("Apple sign-in error: \(error.localizedDescription)")
+            authError = error.localizedDescription
             isAuthenticating = false
             loginState = .error(error.localizedDescription)
         }

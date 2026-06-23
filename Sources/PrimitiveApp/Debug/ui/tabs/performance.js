@@ -10,7 +10,7 @@
 //   documentLoaded  → loadedFromSqlite (source=sqlite) or loadedFromServer
 //   documentClosed  → closed
 //   sync (synced=true) → synced
-//   remoteUpdate    → remoteUpdate
+//   documentSyncStateChanged (synced) → syncStateChanged
 //
 // SSE's on-connect replay (last 500 events) fills in history for free,
 // so new tabs don't paint empty.
@@ -37,7 +37,7 @@ function performanceTab() {
       }
       if (e.type === 'documentClosed') return 'closed';
       if (e.type === 'sync' && e.synced) return 'synced';
-      if (e.type === 'remoteUpdate') return 'remoteUpdate';
+      if (e.type === 'documentSyncStateChanged' && e.state === 'synced') return 'syncStateChanged';
       return null;
     },
 
@@ -95,7 +95,7 @@ function performanceTab() {
       let serverCount = 0;
       let serverBytes = 0;
       let serverMs = 0;
-      let remoteUpdates = 0;
+      let syncStateChanges = 0;
       let eventCount = 0;
       const sawDocIds = new Set();
       for (const e of this.perfVisibleEvents) {
@@ -114,11 +114,11 @@ function performanceTab() {
           if (e.bytes) serverBytes += e.bytes;
           if (e.elapsedMs) serverMs += e.elapsedMs;
         }
-        if (phase === 'remoteUpdate') remoteUpdates++;
+        if (phase === 'syncStateChanged') syncStateChanges++;
       }
       docsOpened = sawDocIds.size;
       return { eventCount, docsOpened, sqliteCount, sqliteBytes, sqliteMs,
-               serverCount, serverBytes, serverMs, remoteUpdates };
+               serverCount, serverBytes, serverMs, syncStateChanges };
     },
 
     // ---- actions ----
@@ -136,7 +136,7 @@ function performanceTab() {
         case 'loadedFromSqlite': return 'read from offline cache (sqlite)';
         case 'loadedFromServer': return 'downloaded from server';
         case 'synced':           return 'sync complete';
-        case 'remoteUpdate':     return 'received remote update';
+        case 'syncStateChanged': return 'document sync state changed';
         case 'closed':           return 'closed document';
         default:                 return p;
       }
@@ -147,7 +147,7 @@ function performanceTab() {
         case 'loadedFromSqlite': return '💾';
         case 'loadedFromServer': return '🌐';
         case 'synced':           return '✅';
-        case 'remoteUpdate':     return '📡';
+        case 'syncStateChanged': return '📡';
         case 'closed':           return '🚪';
         default:                 return '·';
       }

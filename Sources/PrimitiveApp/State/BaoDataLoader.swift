@@ -18,9 +18,10 @@ public enum LoaderTrigger {
     /// Useful for model-backed loaders.
     case onSync
 
-    /// Reload on `JsBaoEvent.remoteUpdate` — fires whenever a remote write lands
-    /// in any open document. Pair with `.onSync` for full model reactivity.
-    case onRemoteUpdate
+    /// Reload on `JsBaoEvent.documentSyncStateChanged` with `state == "synced"`
+    /// whenever a remote write lands in any open document. Pair with `.onSync`
+    /// for full model reactivity.
+    case onDocumentSyncStateChanged
 
     /// Reload on `JsBaoEvent.documentLoaded` and `JsBaoEvent.documentClosed`.
     /// Matches the JS loader's `reloadOnDocumentEvents` flag (default on).
@@ -45,14 +46,14 @@ public enum LoaderTrigger {
     ///
     /// ```swift
     /// loader.bind(client: client, subscribeTo: [.onModel(subscribe: TaskRecord.subscribe)]) { _ in
-    ///     TaskRecord.findAll()
+    ///     try await TaskRecord.findAll()
     /// }
     /// ```
     ///
     /// The closest analogue to JS-bao's per-model `Model.subscribe`
-    /// reactivity — tighter than `.onSync` + `.onRemoteUpdate` (no spurious
-    /// reloads from unrelated models) and matches the JS pattern of binding
-    /// views to model events.
+    /// reactivity — tighter than `.onSync` + `.onDocumentSyncStateChanged`
+    /// (no spurious reloads from unrelated models) and matches the JS pattern
+    /// of binding views to model events.
     case onModel(subscribe: (@escaping () -> Void) -> () -> Void)
 
     /// Caller-supplied subscription installer. Receive the connected client and
@@ -286,9 +287,12 @@ public final class BaoDataLoader<Data>: ObservableObject {
     ///     Errors thrown here are caught, stored on `error`, and forwarded to
     ///     `onError`. The closure is `@MainActor`-isolated (it runs on the
     ///     main actor, like the rest of this loader), so you can read
-    ///     `@MainActor` state — e.g. a sync model read like
-    ///     `TaskRecord.findAll()` — directly, without wrapping it in
-    ///     `await MainActor.run { … }`.
+    ///     `@MainActor` state — e.g. a model read like
+    ///     `try await TaskRecord.findAll()` — directly, without wrapping it
+    ///     in `await MainActor.run { … }`. (`find`/`findAll` are async +
+    ///     throwing since js-bao-wss#992: a stored row that fails typed
+    ///     decode throws `PrimitiveDecodeError`, which this loader surfaces
+    ///     on `error`/`onError` instead of silently dropping the row.)
     ///   - onError: Optional error callback (called in addition to setting
     ///     `error`).
     public func bind(
@@ -459,9 +463,11 @@ public final class BaoDataLoader<Data>: ObservableObject {
                 }
                 subscriptions.append(sub)
 
-            case .onRemoteUpdate:
-                let sub = client.events.on(.remoteUpdate) { (_: RemoteUpdateEvent) in
-                    reloadAfterInitialLoad()
+            case .onDocumentSyncStateChanged:
+                let sub = client.events.on(.documentSyncStateChanged) { (event: DocumentSyncStateChangedEvent) in
+                    if event.state == "synced" {
+                        reloadAfterInitialLoad()
+                    }
                 }
                 subscriptions.append(sub)
 

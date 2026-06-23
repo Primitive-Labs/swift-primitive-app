@@ -18,15 +18,23 @@ public struct PrimitiveLoginView: View {
     // which is passed in explicitly.
     @ObservedObject var authManager: PrimitiveAuthManager
     let appName: String
-    let showGoogleOAuth: Bool
 
     @State private var email = ""
     @State private var otpCode = ""
 
-    public init(appName: String = "Primitive", showGoogleOAuth: Bool = false, authManager: PrimitiveAuthManager) {
+    public init(
+        appName: String = "Primitive",
+        authManager: PrimitiveAuthManager
+    ) {
         self.appName = appName
-        self.showGoogleOAuth = showGoogleOAuth
         self.authManager = authManager
+    }
+
+    /// Which buttons to render — straight from the server's auth config
+    /// (loaded by `PrimitiveAuthManager.attach`). Email-only until it
+    /// resolves, so the form is usable immediately.
+    private var providers: PrimitiveAuthManager.AuthProviders {
+        authManager.availableProviders ?? .emailOnly
     }
 
     public var body: some View {
@@ -109,36 +117,36 @@ public struct PrimitiveLoginView: View {
 
     // MARK: - Initial Login
 
+    /// Standard iOS sign-in layout, driven by the server's auth config:
+    ///
+    /// - Return visit (a passkey lives on this device): passkey first,
+    ///   prominent, with the other providers below the divider.
+    /// - First visit: Apple, then Google, then email — with a small
+    ///   passkey link at the bottom for users who registered one on
+    ///   another device.
     private var initialLoginView: some View {
         VStack(spacing: 16) {
-            // Email input
-            TextField("Email address", text: $email)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.emailAddress)
-                #if os(iOS)
-                .keyboardType(.emailAddress)
-                .autocapitalization(.none)
-                #endif
-
-            // Primary: OTP (best native experience -- no redirects needed)
-            Button {
-                Task { await authManager.requestOtp(email: email) }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "number")
-                    Text("Sign in with Email Code")
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(email.isEmpty)
-
-            if showGoogleOAuth {
-                dividerWithText("or")
-
+            if providers.apple {
                 Button {
-                    Task { await authManager.startOAuth() }
+                    Task { await authManager.signInWithApple() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "applelogo")
+                        Text("Sign in with Apple")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if providers.google {
+                // Native #928 flow (system sheet + plist-derived redirect).
+                // The pre-#928 server-redirect flow remains available as
+                // `authManager.startOAuth()` for apps that registered a
+                // custom-scheme redirect with the server.
+                Button {
+                    Task { await authManager.signInWithGoogle() }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "globe")
@@ -148,6 +156,41 @@ public struct PrimitiveLoginView: View {
                     .padding(.vertical, 12)
                 }
                 .buttonStyle(.bordered)
+            }
+
+            if providers.emailOtp || providers.magicLink {
+                if providers.apple || providers.google {
+                    dividerWithText("or")
+                }
+
+                TextField("Email address", text: $email)
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.emailAddress)
+                    #if os(iOS)
+                    .keyboardType(.emailAddress)
+                    .autocapitalization(.none)
+                    #endif
+
+                // OTP over magic link when both are on: no redirect
+                // round-trip, best native experience.
+                Button {
+                    Task {
+                        if providers.emailOtp {
+                            await authManager.requestOtp(email: email)
+                        } else {
+                            await authManager.requestMagicLink(email: email)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: providers.emailOtp ? "number" : "envelope")
+                        Text(providers.emailOtp ? "Sign in with Email Code" : "Email me a sign-in link")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(email.isEmpty)
             }
         }
     }

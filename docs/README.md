@@ -89,7 +89,7 @@ The lifecycle methods you call from your views:
 The override hooks (subclass and override these for typed Y.Doc data — see [BaoDataLoader section](#3-baodataloaderdata--reactive-data-loading) below):
 - `onDocumentOpened(documentId:)` — called once a doc is open and connected to the shared store. Refresh your `@Published` model arrays here from the codegen facade (`items = ItemRecord.query()`); no per-doc model wrappers to construct. Make sure you registered your models in `connectClient()` (`GeneratedModels.register(on: client)`) so the facade sees the doc — see [swift-client codegen docs](../../../js-bao-wss-swift/swift-client/docs/codegen.md).
 - `onDocumentSynced(documentId:)` — called when initial sync completes.
-- `onRemoteUpdate(documentId:)` — called when a remote change arrives.
+- `onDocumentSyncStateChanged(documentId:state:)` — called when a remote change lands and the document reports `state == "synced"`.
 
 > Real subclassing example: [DemoAppState.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/DemoAppState.swift) — adds `taskModel`, `todoModel`, etc. and wires them up in `onDocumentOpened`.
 
@@ -127,7 +127,7 @@ The Swift port of JS [`useBaoDataLoader`](../../../primitive-app-dev/primitive-a
 It's a thin orchestrator. The interesting parts are:
 
 1. **You provide `load: (JsBaoClient) async throws -> Data`** — the loader doesn't know or care what's inside.
-2. **You provide `subscribeTo: [LoaderTrigger]`** — a list of event triggers that should cause a reload. Cases: `.onSync`, `.onRemoteUpdate`, `.onDocumentEvents` (matches JS's `reloadOnDocumentEvents` default), `.onConnect`, `.custom(...)`.
+2. **You provide `subscribeTo: [LoaderTrigger]`** — a list of event triggers that should cause a reload. Cases: `.onSync`, `.onDocumentSyncStateChanged`, `.onDocumentEvents` (matches JS's `reloadOnDocumentEvents` default), `.onConnect`, `.custom(...)`.
 3. **`documentReady` is a settable property** — flip it from your view; the loader reloads on `false → true` and resets `initialDataLoaded` on `true → false`.
 4. **`error` is `@Published`** — surface failures in your view directly, no `} catch {}` swallowing.
 5. **Two reload methods** — `reload()` debounces (50ms default), `reloadNow()` is immediate (use after a known mutation).
@@ -166,7 +166,7 @@ if let error = loader.error { Text(error.localizedDescription).foregroundStyle(.
     loader.documentReady = demoState.isDefaultDocReady
     loader.bind(
         client: appState.client,
-        subscribeTo: [.onSync, .onRemoteUpdate]   // truly live: reloads on every CRDT update
+        subscribeTo: [.onSync, .onDocumentSyncStateChanged]   // truly live: reloads on every CRDT update
     ) { _ in
         demoState.taskModel?.findAll() ?? []
     }
@@ -177,7 +177,7 @@ if let error = loader.error { Text(error.localizedDescription).foregroundStyle(.
 
 The same loader handles both — the difference is which events you subscribe to, and what your `load` closure does.
 
-**"Live" caveat.** For Y-CRDT records, "live updates" means truly live: a remote write lands → `.remoteUpdate` fires → loader reloads → user sees the change with no action. For REST resources there's no server push, so "live" only means (a) reload on `.onConnect` after a reconnect and (b) manual `reloadNow()` after writes. Be honest with yourself about which you have.
+**"Live" caveat.** For Y-CRDT records, "live updates" means truly live: a remote write lands → `.documentSyncStateChanged` reports `state == "synced"` → loader reloads → user sees the change with no action. For REST resources there's no server push, so "live" only means (a) reload on `.onConnect` after a reconnect and (b) manual `reloadNow()` after writes. Be honest with yourself about which you have.
 
 **Multi-source loaders.** Because `Data` is generic, one loader can return derived/aggregated state from multiple server calls. [DatabasesDemo.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/Views/Features/DatabasesDemo.swift) does this — its `dbViewLoader: BaoDataLoader<DbView>` loads `{ tasks, statusCounts }` in one closure with two parallel `client.databases.executeOperation` calls.
 

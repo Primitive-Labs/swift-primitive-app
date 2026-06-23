@@ -75,7 +75,17 @@ public struct AuthGateView<Content: View>: View {
     ///   tripping SwiftUI's exact-runtime-type lookup. See the type-level
     ///   doc-comment on `ConnectionStatusView` for the underlying SwiftUI
     ///   limitation.
-    public init(appState: PrimitiveAppState, appName: String = "Primitive", authManager: PrimitiveAuthManager, @ViewBuilder content: @escaping () -> Content) {
+    ///
+    /// The login screen's sign-in buttons (Google #928, Apple #409, email)
+    /// are driven by the server's auth config — see
+    /// `PrimitiveAuthManager.availableProviders` — so there's nothing to
+    /// configure here.
+    public init(
+        appState: PrimitiveAppState,
+        appName: String = "Primitive",
+        authManager: PrimitiveAuthManager,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
         self.appState = appState
         self.appName = appName
         self.authManager = authManager

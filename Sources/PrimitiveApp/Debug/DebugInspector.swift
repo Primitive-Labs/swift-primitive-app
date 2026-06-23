@@ -494,9 +494,10 @@ public final class DebugInspector: @unchecked Sendable {
         do {
             switch action {
             case "doc/create":
-                // Use DocumentsAPI.create (not JsBaoClient.createDocument, which mints a UUID
-                // locally — your server requires ULIDs and rejects UUIDs with a 400). Letting
-                // the server pick the id is simplest and matches how the demo creates docs.
+                // DocumentsAPI.create delegates to the local-first
+                // JsBaoClient.createDocument (js-bao-wss#1108): a ULID is minted
+                // client-side, the doc is writable immediately, and the server
+                // commit happens in the background.
                 var opts = CreateDocumentOptions()
                 if let title = body["title"] as? String, !title.isEmpty { opts.title = title }
                 if let tags = body["tags"] as? [String] { opts.tags = tags }
@@ -1478,8 +1479,11 @@ public final class DebugInspector: @unchecked Sendable {
                     "synced": e.synced,
                 ])
             },
-            client.events.on(.remoteUpdate) { [weak self] (e: RemoteUpdateEvent) in
-                self?.recordEvent(type: "remoteUpdate", fields: ["documentId": e.documentId])
+            client.events.on(.documentSyncStateChanged) { [weak self] (e: DocumentSyncStateChangedEvent) in
+                self?.recordEvent(type: "documentSyncStateChanged", fields: [
+                    "documentId": e.documentId,
+                    "state": e.state,
+                ])
             },
             client.events.on(.permission) { [weak self] (e: PermissionEvent) in
                 self?.recordEvent(type: "permission", fields: [

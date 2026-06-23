@@ -200,13 +200,13 @@ Sources: [blobs.html](../Sources/PrimitiveApp/Debug/ui/tabs/blobs.html), [blobs.
 
 ### Performance
 
-A **live** chronological timeline of every document-level phase event the inspector has seen — `loadedFromSqlite`, `loadedFromServer`, `synced`, `remoteUpdate`, `closed` — with plain-English labels and icons. Summary cards at the top totalize sqlite vs server volume + timing. No refresh button: the whole view is derived from the SSE event stream that core.js consumes continuously, so new events appear the instant they arrive.
+A **live** chronological timeline of every document-level phase event the inspector has seen — `loadedFromSqlite`, `loadedFromServer`, `synced`, `syncStateChanged`, `closed` — with plain-English labels and icons. Summary cards at the top totalize sqlite vs server volume + timing. No refresh button: the whole view is derived from the SSE event stream that core.js consumes continuously, so new events appear the instant they arrive.
 
 The goal: someone with no jsbao familiarity should be able to read the timeline and answer "what data was loaded, from where, in how long?" Each `synced` event is annotated with the models that became available on that doc (cross-referenced against `InspectableModelHost`).
 
 Filter-by-doc dropdown lets you isolate one doc's trace when multiple docs are syncing concurrently.
 
-Sources: [performance.html](../Sources/PrimitiveApp/Debug/ui/tabs/performance.html), [performance.js](../Sources/PrimitiveApp/Debug/ui/tabs/performance.js). Derivation: `perfPhaseFromEvent(e)` in performance.js maps each SSE event (`documentLoaded` → `loadedFromSqlite`/`loadedFromServer`, `sync`→`synced`, `remoteUpdate`→`remoteUpdate`, `documentClosed`→`closed`) into a phase row. The `events` array (capped at 1000, with the last 500 replayed on connect so new tabs don't paint empty) drives `perfTimeline` + `perfSummary` via computed getters, so Alpine re-renders automatically on each new event.
+Sources: [performance.html](../Sources/PrimitiveApp/Debug/ui/tabs/performance.html), [performance.js](../Sources/PrimitiveApp/Debug/ui/tabs/performance.js). Derivation: `perfPhaseFromEvent(e)` in performance.js maps each SSE event (`documentLoaded` → `loadedFromSqlite`/`loadedFromServer`, `sync`→`synced`, `documentSyncStateChanged` with `state == "synced"` → `syncStateChanged`, `documentClosed`→`closed`) into a phase row. The `events` array (capped at 1000, with the last 500 replayed on connect so new tabs don't paint empty) drives `perfTimeline` + `perfSummary` via computed getters, so Alpine re-renders automatically on each new event.
 
 ### SQLite (disk)
 

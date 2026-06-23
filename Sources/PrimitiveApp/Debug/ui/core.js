@@ -261,7 +261,7 @@ function __inspectorCore__() {
     eventColor(type) {
       if (type === 'status' || type === 'networkMode') return 'var(--accent)';
       if (type === 'sync') return 'var(--green)';
-      if (type === 'remoteUpdate') return 'var(--yellow)';
+      if (type === 'documentSyncStateChanged') return 'var(--yellow)';
       if (type === 'documentLoaded' || type === 'documentClosed') return 'var(--blue)';
       if (type && (type.includes('Failed') || type === 'pendingCreateFailed')) return 'var(--red)';
       if (type === 'permission') return 'var(--primary)';

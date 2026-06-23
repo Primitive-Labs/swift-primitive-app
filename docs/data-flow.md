@@ -72,7 +72,7 @@ It is **not** queried during normal CRUD. Don't expect to see fast filtered quer
 |---|---|
 | App launches, user authed | `loadDocument()` reads from disk SQLite → applies CRDT to in-memory Y.Doc → query engine projects YMaps into `:memory:` tables. |
 | Local mutation (`model.create/update/delete`) | YMap update inside transaction → update observer fires → query engine writes one row → emits local update for WebSocket sync. |
-| Remote sync arrives | Update applied to Y.Doc with `applyingRemoteUpdate=true` → query engine projects the change → `onRemoteUpdate(documentId:)` callback fires for the app. |
+| Remote sync arrives | Update applied to Y.Doc under the remote-apply guard → query engine projects the change → `onDocumentSyncStateChanged(documentId:state:)` callback fires for the app when the state is `"synced"`. |
 | Sync completes (`handleSyncComplete`) | `persistDocumentToLocal()` writes the full Y.Doc state to disk SQLite. |
 | Document closes | One last `persistDocumentToLocal()`, then evict from in-memory structures. |
 | `closeDocument(evictLocal: true)` | Skip the persist; instead, delete the disk row entirely. |
