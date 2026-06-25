@@ -76,10 +76,12 @@ public struct AuthGateView<Content: View>: View {
     ///   doc-comment on `ConnectionStatusView` for the underlying SwiftUI
     ///   limitation.
     ///
-    /// The login screen's sign-in buttons (Google #928, Apple #409, email)
-    /// are driven by the server's auth config — see
-    /// `PrimitiveAuthManager.availableProviders` — so there's nothing to
-    /// configure here.
+    /// The login screen's sign-in buttons (Google #928, Apple #409,
+    /// passkeys #929, email) are driven by the server's auth config —
+    /// see `PrimitiveAuthManager.availableProviders` — so there's nothing
+    /// to configure here. After a first interactive sign-in the gate also
+    /// presents the one-time "add a passkey?" enrollment sheet when the
+    /// app supports passkeys.
     public init(
         appState: PrimitiveAppState,
         appName: String = "Primitive",
@@ -123,6 +125,20 @@ public struct AuthGateView<Content: View>: View {
         }
         .onChange(of: appState.isConnected) { _, connected in
             if connected { hasConnectedOnce = true }
+        }
+        // One-time post-sign-in nudge (standard iOS pattern): the user just
+        // signed in with something slower than a passkey and the app
+        // supports passkeys — offer to add one. Swipe-dismiss counts as
+        // "Not Now" so the user is never nagged twice.
+        .sheet(isPresented: $authManager.shouldOfferPasskeyEnrollment,
+               onDismiss: {
+                   if authManager.shouldOfferPasskeyEnrollment == false
+                       && !authManager.hasLocalPasskeyHint {
+                       authManager.declinePasskeyEnrollment()
+                   }
+               }) {
+            PasskeyEnrollmentView(authManager: authManager)
+                .presentationDetents([.medium])
         }
     }
 

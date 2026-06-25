@@ -57,17 +57,45 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     public struct AuthProviders: Equatable, Sendable {
         public var google: Bool
         public var apple: Bool
+        public var passkey: Bool
         public var emailOtp: Bool
         public var magicLink: Bool
 
         /// Conservative fallback when the config fetch fails: email only.
         public static let emailOnly = AuthProviders(
-            google: false, apple: false,
+            google: false, apple: false, passkey: false,
             emailOtp: true, magicLink: true
         )
     }
 
     @Published public private(set) var availableProviders: AuthProviders?
+
+    /// True when a passkey was registered or used on THIS device for this
+    /// app — drives the login screen's passkey-first layout on return
+    /// visits. Persisted in UserDefaults per appId.
+    @Published public private(set) var hasLocalPasskeyHint = false
+
+    /// One-shot post-sign-in nudge: set after an interactive non-passkey
+    /// sign-in when the app supports passkeys, this device has none, and
+    /// the user hasn't declined before. `AuthGateView` presents the
+    /// enrollment sheet off this; resolve it via `enrollPasskey()` or
+    /// `declinePasskeyEnrollment()`.
+    @Published public var shouldOfferPasskeyEnrollment = false
+
+    /// Passkeys registered for the signed-in account, for a "manage
+    /// passkeys" UI (e.g. `PrimitiveProfileView`). Populated by
+    /// `refreshPasskeys()`; kept in sync by `enrollPasskey()` /
+    /// `deletePasskey(passkeyId:)`.
+    @Published public private(set) var passkeys: [PasskeyInfo] = []
+
+    /// App-level switch for the automatic post-sign-in passkey nudge.
+    /// Leave `true` for the standard flow; set `false` before `attach` if
+    /// your app wants passkey *sign-in* without the enrollment prompt
+    /// (e.g. you offer "Add a passkey" from your own settings screen via
+    /// `enrollPasskey()` instead). The server's `passkeyEnabled` app
+    /// setting remains the master switch — when it's off, neither the
+    /// login button nor the nudge ever appears.
+    public var automaticPasskeyEnrollmentPrompt = true
 
     // MARK: - Private
 
@@ -87,6 +115,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// Attach to a JsBaoClient and listen for auth events.
     public func attach(to client: JsBaoClient) {
         self.client = client
+        hasLocalPasskeyHint = UserDefaults.standard.bool(forKey: passkeyHintKey)
 
         // Load the server's configured sign-in methods so the login view
         // can render the right buttons. Email affordances stay on while
@@ -97,6 +126,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
                 self?.availableProviders = AuthProviders(
                     google: config.hasOAuth,
                     apple: config.hasApple,
+                    passkey: config.hasPasskey,
                     emailOtp: config.otpEnabled,
                     magicLink: config.magicLinkEnabled
                 )
@@ -133,12 +163,17 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 logger.info("Auth success: cause=\(event.cause ?? "unknown")")
+                let newUserId = client.getUserId()
+                if self.userId != nil && self.userId != newUserId {
+                    self.clearSessionScopedPasskeyState()
+                }
                 self.isAuthenticated = true
-                self.userId = client.getUserId()
+                self.userId = newUserId
                 self.isAuthenticating = false
                 self.isAuthRestoring = false
                 self.loginState = .initial
                 self.authError = nil
+                self.handlePostSignIn(cause: event.cause)
             }
         }
 
@@ -151,6 +186,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
                 self.isAuthenticating = false
                 self.isAuthRestoring = false
                 self.loginState = .error(msg)
+                self.clearSessionScopedPasskeyState()
             }
         }
     }
@@ -265,6 +301,141 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Passkeys
+
+    /// Sign in with a passkey (#929) via the system sheet (discoverable
+    /// credential flow). Requires the app's Associated Domains
+    /// (`webcredentials:`) entitlement to cover the server's configured
+    /// RP domain.
+    public func signInWithPasskey() async {
+        guard let client else {
+            authError = "Client not initialized"
+            return
+        }
+
+        isAuthenticating = true
+        loginState = .authenticating
+        authError = nil
+
+        do {
+            let result = try await client.auth.signInWithPasskey()
+            logger.info("Passkey sign-in done: userId=\(result.user.userId)")
+            recordPasskeyOnDevice()
+            // .authSuccess event updates isAuthenticated
+        } catch PasskeyError.canceled {
+            logger.info("Passkey sign-in cancelled by user")
+            isAuthenticating = false
+            loginState = .initial
+        } catch {
+            logger.error("Passkey sign-in error: \(error.localizedDescription)")
+            authError = error.localizedDescription
+            isAuthenticating = false
+            loginState = .error(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Passkey enrollment (post-sign-in nudge)
+
+    private var passkeyHintKey: String {
+        "primitive.passkey.onDevice.\(client?.getAppId() ?? "default")"
+    }
+    private var passkeyDeclinedKey: String {
+        "primitive.passkey.promptDeclined.\(client?.getAppId() ?? "default")"
+    }
+
+    /// Sign-in causes that should trigger the one-time "add a passkey?"
+    /// nudge: a human just authenticated interactively with something
+    /// slower than a passkey. Session restores/refreshes don't count, and
+    /// neither does a passkey sign-in itself.
+    private static let enrollmentNudgeCauses: Set<String> = [
+        "oauth", "apple", "otp", "magic_link",
+    ]
+
+    private func handlePostSignIn(cause: String?) {
+        guard let cause else { return }
+        if cause == "passkey" {
+            recordPasskeyOnDevice()
+            return
+        }
+        guard automaticPasskeyEnrollmentPrompt,
+              Self.enrollmentNudgeCauses.contains(cause),
+              availableProviders?.passkey == true,
+              !hasLocalPasskeyHint,
+              !UserDefaults.standard.bool(forKey: passkeyDeclinedKey) else {
+            return
+        }
+        shouldOfferPasskeyEnrollment = true
+    }
+
+    private func recordPasskeyOnDevice() {
+        hasLocalPasskeyHint = true
+        UserDefaults.standard.set(true, forKey: passkeyHintKey)
+        shouldOfferPasskeyEnrollment = false
+    }
+
+    private func clearSessionScopedPasskeyState() {
+        passkeys = []
+        shouldOfferPasskeyEnrollment = false
+    }
+
+    /// Register a passkey for the signed-in user (the enrollment sheet's
+    /// "Add Passkey" action; also usable from a profile/settings screen).
+    /// Returns true on success.
+    @discardableResult
+    public func enrollPasskey(deviceName: String? = nil) async -> Bool {
+        guard let client else { return false }
+        do {
+            _ = try await client.auth.registerPasskey(deviceName: deviceName)
+            logger.info("Passkey enrolled")
+            recordPasskeyOnDevice()
+            await refreshPasskeys()
+            return true
+        } catch PasskeyError.canceled {
+            logger.info("Passkey enrollment cancelled by user")
+            return false
+        } catch {
+            logger.error("Passkey enrollment error: \(error.localizedDescription)")
+            authError = error.localizedDescription
+            return false
+        }
+    }
+
+    /// "Not now" on the enrollment nudge — never auto-prompt again on this
+    /// device (the user can still add a passkey from app UI).
+    public func declinePasskeyEnrollment() {
+        UserDefaults.standard.set(true, forKey: passkeyDeclinedKey)
+        shouldOfferPasskeyEnrollment = false
+    }
+
+    /// Load the signed-in account's registered passkeys into `passkeys`.
+    /// Errors are swallowed (the common one is "passkeys not configured for
+    /// this app", which a manage-passkeys screen should treat as "none"
+    /// rather than surface as an error). Safe to call on view appear.
+    public func refreshPasskeys() async {
+        guard let client else { return }
+        do {
+            passkeys = try await client.auth.passkeyList().passkeys
+        } catch {
+            logger.info("refreshPasskeys: \(error.localizedDescription)")
+        }
+    }
+
+    /// Delete one registered passkey and refresh the list. Returns true on
+    /// success.
+    @discardableResult
+    public func deletePasskey(passkeyId: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            _ = try await client.auth.passkeyDelete(passkeyId: passkeyId)
+            await refreshPasskeys()
+            return true
+        } catch {
+            logger.error("deletePasskey error: \(error.localizedDescription)")
+            authError = error.localizedDescription
+            return false
+        }
+    }
+
     // MARK: - Magic Link
 
     /// Request a magic link email.
@@ -370,8 +541,10 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         } catch {
             logger.error("Logout error: \(error.localizedDescription)")
         }
+        clearSessionScopedPasskeyState()
         isAuthenticated = false
         userId = nil
+        authError = nil
         loginState = .initial
     }
 

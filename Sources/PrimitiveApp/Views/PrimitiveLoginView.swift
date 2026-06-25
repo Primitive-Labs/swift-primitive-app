@@ -37,6 +37,12 @@ public struct PrimitiveLoginView: View {
         authManager.availableProviders ?? .emailOnly
     }
 
+    /// Passkey-first on return visits: a passkey was registered or used on
+    /// this device before, so lead with it (the standard iOS pattern).
+    private var leadWithPasskey: Bool {
+        providers.passkey && authManager.hasLocalPasskeyHint
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             Spacer()
@@ -126,6 +132,22 @@ public struct PrimitiveLoginView: View {
     ///   another device.
     private var initialLoginView: some View {
         VStack(spacing: 16) {
+            if leadWithPasskey {
+                Button {
+                    Task { await authManager.signInWithPasskey() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.badge.key.fill")
+                        Text("Sign in with Passkey")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.borderedProminent)
+
+                dividerWithText("or")
+            }
+
             if providers.apple {
                 Button {
                     Task { await authManager.signInWithApple() }
@@ -172,26 +194,49 @@ public struct PrimitiveLoginView: View {
                     #endif
 
                 // OTP over magic link when both are on: no redirect
-                // round-trip, best native experience.
-                Button {
-                    Task {
-                        if providers.emailOtp {
-                            await authManager.requestOtp(email: email)
-                        } else {
-                            await authManager.requestMagicLink(email: email)
+                // round-trip, best native experience. Prominent unless a
+                // passkey already leads the screen.
+                emailProminence(
+                    Button {
+                        Task {
+                            if providers.emailOtp {
+                                await authManager.requestOtp(email: email)
+                            } else {
+                                await authManager.requestMagicLink(email: email)
+                            }
                         }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: providers.emailOtp ? "number" : "envelope")
+                            Text(providers.emailOtp ? "Sign in with Email Code" : "Email me a sign-in link")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
                     }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: providers.emailOtp ? "number" : "envelope")
-                        Text(providers.emailOtp ? "Sign in with Email Code" : "Email me a sign-in link")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(email.isEmpty)
+                    .disabled(email.isEmpty)
+                )
             }
+
+            // Passkey exists server-side but (as far as this device knows)
+            // not locally: keep it reachable without leading with it —
+            // e.g. a passkey registered on the user's other device.
+            if providers.passkey && !leadWithPasskey {
+                Button("Sign in with a Passkey") {
+                    Task { await authManager.signInWithPasskey() }
+                }
+                .font(.caption)
+            }
+        }
+    }
+
+    /// `.bordered` vs `.borderedProminent` are distinct opaque types, so a
+    /// ternary can't pick between them — branch in a ViewBuilder instead.
+    @ViewBuilder
+    private func emailProminence<V: View>(_ button: V) -> some View {
+        if leadWithPasskey {
+            button.buttonStyle(.bordered)
+        } else {
+            button.buttonStyle(.borderedProminent)
         }
     }
 

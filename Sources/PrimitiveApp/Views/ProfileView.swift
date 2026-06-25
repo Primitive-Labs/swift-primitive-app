@@ -12,6 +12,15 @@ public struct PrimitiveProfileView: View {
     @ObservedObject var authManager: PrimitiveAuthManager
     var showDeveloperInfo: Bool
 
+    @State private var isAddingPasskey = false
+
+    /// Passkeys are surfaced only when the app actually offers them — i.e.
+    /// the server reports `hasPasskey` (passkeyEnabled + passkeyRpConfig).
+    /// When passkeys are off, the whole section is hidden.
+    private var passkeysAvailable: Bool {
+        authManager.availableProviders?.passkey == true
+    }
+
     /// - Parameter appState: The app's `PrimitiveAppState` instance. Passed
     ///   explicitly rather than read from `@EnvironmentObject` so subclasses
     ///   work (see `ConnectionStatusView` for the underlying SwiftUI
@@ -78,6 +87,11 @@ public struct PrimitiveProfileView: View {
                     }
                 }
 
+                // Passkeys — only when the app offers them.
+                if passkeysAvailable {
+                    passkeysSection
+                }
+
                 // Logout
                 Section {
                     Button(role: .destructive) {
@@ -93,6 +107,48 @@ public struct PrimitiveProfileView: View {
             }
         }
         .navigationTitle("Profile")
+        .task {
+            if passkeysAvailable { await authManager.refreshPasskeys() }
+        }
+    }
+
+    @ViewBuilder
+    private var passkeysSection: some View {
+        Section("Passkeys") {
+            ForEach(authManager.passkeys, id: \.passkeyId) { pk in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(pk.deviceName.isEmpty ? "Passkey" : pk.deviceName)
+                        Text("Added \(pk.createdAt)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        Task { await authManager.deletePasskey(passkeyId: pk.passkeyId) }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+            }
+
+            Button {
+                Task {
+                    isAddingPasskey = true
+                    await authManager.enrollPasskey()
+                    isAddingPasskey = false
+                }
+            } label: {
+                HStack {
+                    Label("Add a Passkey", systemImage: "plus.circle")
+                    Spacer()
+                    if isAddingPasskey { ProgressView() }
+                }
+            }
+            .disabled(isAddingPasskey)
+        }
     }
 
     @ViewBuilder

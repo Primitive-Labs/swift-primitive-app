@@ -84,7 +84,7 @@ open class PrimitiveAppState: ObservableObject {
     /// `connectClient()` is invoked automatically here (since
     /// `AuthGateView`'s `.onChange(of: isAuthenticated)` only fires on
     /// transitions, not on initial state).
-    public func initialize() async {
+    open func initialize() async {
         logger.info("Initializing...")
 
         // Load app config from primitive.json
