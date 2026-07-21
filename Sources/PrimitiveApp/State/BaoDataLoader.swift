@@ -199,6 +199,29 @@ public final class BaoDataLoader<Data>: ObservableObject {
     /// lists.
     @Published public private(set) var error: Error?
 
+    /// Anti-flash loading flag. Gate your skeleton/placeholder UI on this
+    /// instead of `phase == .loading` (or `isLoading`) when you want to avoid
+    /// a skeleton flashing on fast warm reloads. Mirrors the JS
+    /// `useJsBaoDataLoader`'s `showSkeleton`:
+    ///
+    ///  - `true` immediately while the document is *opening* (`documentReady`
+    ///    is `false`) — the dominant initial-load wait, where no load runs yet.
+    ///  - once `documentReady` is `true` and a load is in flight but the first
+    ///    load hasn't completed, `true` only after the load has run longer than
+    ///    ``skeletonDelay`` — so a warm reload that resolves from local CRDT
+    ///    state in a few milliseconds never flashes a skeleton.
+    ///  - `false` once the first load completes (`initialDataLoaded`), and
+    ///    stays `false` across reactive reloads of an already-loaded document.
+    ///
+    /// ```swift
+    /// if loader.showSkeleton {
+    ///     SkeletonList()
+    /// } else {
+    ///     switch loader.phase { … }
+    /// }
+    /// ```
+    @Published public private(set) var showSkeleton: Bool = false
+
     /// View-facing trinary phase. The canonical `List(loader.data ?? [])`
     /// shape collapses "still loading" and "loaded but empty" into the
     /// same render — so views that show an empty-state placeholder
@@ -245,6 +268,13 @@ public final class BaoDataLoader<Data>: ObservableObject {
     /// Debounce interval for scheduled reloads. Default 50ms.
     public var debounceInterval: TimeInterval = 0.05
 
+    /// Delay before ``showSkeleton`` flips to `true` while a first load is in
+    /// flight (with `documentReady == true`). If the load completes before
+    /// this delay, the skeleton never shows. Default 100ms. The Swift analogue
+    /// of the JS loader's `skeletonDelayMs` option (seconds here, matching
+    /// ``debounceInterval``'s units).
+    public var skeletonDelay: TimeInterval = 0.1
+
     // MARK: - Private state
 
     private weak var client: JsBaoClient?
@@ -253,6 +283,14 @@ public final class BaoDataLoader<Data>: ObservableObject {
     private var subscriptions: [EventSubscription] = []
     private var reloadTask: Task<Void, Never>?
     private var loadGeneration: Int = 0
+
+    /// Timer that flips `skeletonDelayElapsed` once `skeletonDelay` passes while
+    /// a first load is in flight. `nil` when not armed.
+    private var skeletonTimerTask: Task<Void, Never>?
+
+    /// `true` once the skeleton-delay timer has fired during an in-flight first
+    /// load. Feeds `showSkeleton` while `documentReady` and not yet loaded.
+    private var skeletonDelayElapsed: Bool = false
 
     /// Subscriptions only fire reloads after the first successful load. Prevents
     /// races where a `.sync` event arrives during the initial load and we
@@ -266,6 +304,7 @@ public final class BaoDataLoader<Data>: ObservableObject {
         // EventSubscriptions and Tasks is safe from any thread.
         for sub in subscriptions { sub.cancel() }
         reloadTask?.cancel()
+        skeletonTimerTask?.cancel()
     }
 
     // MARK: - Bind / unbind
@@ -333,6 +372,10 @@ public final class BaoDataLoader<Data>: ObservableObject {
         initialDataLoaded = false
         isLoading = false
         error = nil
+        skeletonTimerTask?.cancel()
+        skeletonTimerTask = nil
+        skeletonDelayElapsed = false
+        showSkeleton = false
     }
 
     // MARK: - Reload
@@ -370,6 +413,7 @@ public final class BaoDataLoader<Data>: ObservableObject {
         initialDataLoaded = false
         subscriptionsEnabled = false
         isLoading = false
+        disarmSkeletonTimer()
     }
 
     /// Reload immediately and wait for completion. Use this from button
@@ -405,6 +449,10 @@ public final class BaoDataLoader<Data>: ObservableObject {
         loadGeneration &+= 1
         let generation = loadGeneration
         isLoading = true
+        // Start the anti-flash timer only for the first load. If it completes
+        // before `skeletonDelay`, `disarmSkeletonTimer()` below cancels the
+        // timer and the skeleton never shows.
+        if !initialDataLoaded { armSkeletonTimer() }
 
         do {
             let result = try await load(client)
@@ -417,10 +465,20 @@ public final class BaoDataLoader<Data>: ObservableObject {
                 initialDataLoaded = true
                 subscriptionsEnabled = true
             }
+            disarmSkeletonTimer()
         } catch {
             guard generation == loadGeneration else { return }
             self.error = error
             onErrorCallback?(error)
+            // Stop the anti-flash timer on failure. If we left it armed (or
+            // `skeletonDelayElapsed` already set), then — because a failed load
+            // never sets `initialDataLoaded` — `showSkeleton` would compute to
+            // `true` and stay stuck, hiding the error UI behind the skeleton.
+            // Disarming clears the flag and refreshes `showSkeleton` to `false`
+            // so the error surfaces. (This deliberately diverges from the JS
+            // loader, which keeps the skeleton on error: Swift exposes a public
+            // `error` flag, so the view should render the error, not a skeleton.)
+            disarmSkeletonTimer()
         }
 
         isLoading = false
@@ -435,12 +493,71 @@ public final class BaoDataLoader<Data>: ObservableObject {
             initialDataLoaded = false
             subscriptionsEnabled = false
             reloadTask?.cancel()
+            reloadTask = nil
+            // The skeleton timer runs independently of `reloadTask`, so cancel
+            // it too and clear `skeletonDelayElapsed`. Otherwise a timer still
+            // armed from the interrupted load could fire against the previous
+            // load's start time, or a leftover elapsed flag could make the next
+            // load's skeleton appear immediately instead of after `skeletonDelay`.
+            // `disarmSkeletonTimer()` also calls `refreshShowSkeleton()`, which
+            // flips the skeleton on immediately here — while the document is
+            // (re)opening no load runs yet, so the delay timer wouldn't cover
+            // this wait.
+            disarmSkeletonTimer()
             return
         }
 
+        refreshShowSkeleton()
         if !isPaused, loadClosure != nil {
             scheduleReload()
         }
+    }
+
+    // MARK: - Anti-flash skeleton gating
+
+    /// Recompute `showSkeleton` from the current state. Mirrors the JS
+    /// `showSkeleton` computed:
+    ///  - loaded             → never show
+    ///  - document opening   → show immediately (`documentReady == false`)
+    ///  - ready, still loading → show only after `skeletonDelay` elapsed
+    private func refreshShowSkeleton() {
+        let next: Bool
+        if initialDataLoaded {
+            next = false
+        } else if !documentReady {
+            next = true
+        } else {
+            next = skeletonDelayElapsed
+        }
+        if showSkeleton != next {
+            showSkeleton = next
+        }
+    }
+
+    /// Arm the skeleton-delay timer for a first load in flight. No-op if a
+    /// timer is already running or the first load has already completed.
+    private func armSkeletonTimer() {
+        guard skeletonTimerTask == nil, !initialDataLoaded else { return }
+        let delay = skeletonDelay
+        skeletonTimerTask = Task { @MainActor [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.skeletonTimerTask = nil
+            guard !self.initialDataLoaded else { return }
+            self.skeletonDelayElapsed = true
+            self.refreshShowSkeleton()
+        }
+    }
+
+    /// Cancel the skeleton-delay timer and clear the elapsed flag, then refresh
+    /// `showSkeleton`. Called when a load completes and when state resets.
+    private func disarmSkeletonTimer() {
+        skeletonTimerTask?.cancel()
+        skeletonTimerTask = nil
+        skeletonDelayElapsed = false
+        refreshShowSkeleton()
     }
 
     // MARK: - Subscriptions

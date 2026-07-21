@@ -61,9 +61,9 @@ extension PrimitiveAppState {
         case .magicLink(let token, _):
             _ = try await client.magicLinkVerify(token: token)
             return .signedInViaMagicLink
-        case .documentAlias, .unknown:
-            // resolve() already chases aliases server-side; an alias here
-            // means it didn't resolve. Either way: not ours to route.
+        case .unknown:
+            // Not a Primitive link shape we route (alias-based share links
+            // were removed with app-scoped aliases in #1168).
             return .notAPlatformLink(url)
         }
     }

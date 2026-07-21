@@ -109,7 +109,10 @@ public struct InspectableModel: @unchecked Sendable {
 
     /// Returns every record as a dictionary. Called on the main actor because the
     /// underlying model reads from a Y.Doc that should only be touched there.
-    public let loadAll: @MainActor () -> [[String: Any]]
+    /// Throws because the backing `model.query()` reads through the SQLite mirror,
+    /// which can surface query/decode errors the inspector should report rather
+    /// than silently render as an empty table.
+    public let loadAll: @MainActor () throws -> [[String: Any]]
 
     /// Optional — delete a record by id. If `nil`, the inspector renders the model as
     /// read-only (no delete buttons).
@@ -130,7 +133,7 @@ public struct InspectableModel: @unchecked Sendable {
         name: String,
         documentId: String,
         fields: [InspectableField],
-        loadAll: @escaping @MainActor () -> [[String: Any]],
+        loadAll: @escaping @MainActor () throws -> [[String: Any]],
         deleteById: (@MainActor (String) -> Void)? = nil,
         createWith: (@MainActor ([String: Any]) throws -> String)? = nil,
         memoryDB: InspectableMemoryDB? = nil
@@ -242,7 +245,7 @@ public extension InspectableModel {
             documentId: documentId,
             fields: fields,
             loadAll: {
-                model.query().map { row in
+                try model.query().map { row in
                     var out = row
                     out.removeValue(forKey: "_meta_doc_id")
                     return out

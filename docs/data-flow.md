@@ -38,9 +38,9 @@ This is what `TypedModel.findAll()` and `DynamicModel.findAll()` walk directly �
 
 ### 3. Query Engine — `:memory:` SQLite (your records, projected)
 
-[`BaoModelQueryEngine`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Query/BaoModelQueryEngine.swift) maintains a real SQLite database with proper schemas, indexes, and foreign keys — but **entirely in RAM** (`sqlite3_open(":memory:")`). It's never written to disk.
+[`BaoModelQueryEngine`](../../../swift-client/Sources/JsBaoClient/Query/BaoModelQueryEngine.swift) maintains a real SQLite database with proper schemas, indexes, and foreign keys — but **entirely in RAM** (`sqlite3_open(":memory:")`). It's never written to disk.
 
-Each [`DynamicModel`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Schema/DynamicModel.swift) (and the `TypedModel<T>` wrapping it) projects its YMap into a per-model SQL table (`tasks`, `todos`, etc.) and keeps it in sync via the Y.Doc update observer. Junction tables back stringset fields. Every column gets indexed.
+Each [`DynamicModel`](../../../swift-client/Sources/JsBaoClient/Schema/DynamicModel.swift) (and the `TypedModel<T>` wrapping it) projects its YMap into a per-model SQL table (`tasks`, `todos`, etc.) and keeps it in sync via the Y.Doc update observer. Junction tables back stringset fields. Every column gets indexed.
 
 This layer is what powers:
 - `model.query(filter:)` — filtered SELECT with proper indexes
@@ -108,10 +108,10 @@ The Y.Doc is the source of truth in the client; the query engine is a derived in
 
 ## Source pointers
 
-- [`DocumentManager.openDocument`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Internal/DocumentManager.swift) — wires the persistence layer + sets up update observer.
-- [`DocumentManager.persistDocumentToLocal`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Internal/DocumentManager.swift) — the disk write path.
-- [`YjsSQLitePersistence`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Internal/DocumentManager.swift) — `loadDocument` / `saveDocument` for the `yjs_docs` store.
-- [`SQLiteStorageProvider`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Storage/SQLiteStorageProvider.swift) — disk file open + `kv_store` schema.
-- [`OfflineStore`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Internal/OfflineStore.swift) — the abstraction that namespaces metadata vs auth.
-- [`BaoModelQueryEngine`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Query/BaoModelQueryEngine.swift) — `:memory:` SQLite, per-model tables, real `query/count/aggregate`.
-- [`DynamicModel`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Schema/DynamicModel.swift) — wires Y.Doc ↔ query engine via update observer.
+- [`DocumentManager.openDocument`](../../../swift-client/Sources/JsBaoClient/Internal/DocumentManager.swift) — wires the persistence layer + sets up update observer.
+- [`DocumentManager.persistDocumentToLocal`](../../../swift-client/Sources/JsBaoClient/Internal/DocumentManager.swift) — the disk write path.
+- [`YjsSQLitePersistence`](../../../swift-client/Sources/JsBaoClient/Internal/DocumentManager.swift) — `loadDocument` / `saveDocument` for the `yjs_docs` store.
+- [`SQLiteStorageProvider`](../../../swift-client/Sources/JsBaoClient/Storage/SQLiteStorageProvider.swift) — disk file open + `kv_store` schema.
+- [`OfflineStore`](../../../swift-client/Sources/JsBaoClient/Internal/OfflineStore.swift) — the abstraction that namespaces metadata vs auth.
+- [`BaoModelQueryEngine`](../../../swift-client/Sources/JsBaoClient/Query/BaoModelQueryEngine.swift) — `:memory:` SQLite, per-model tables, real `query/count/aggregate`.
+- [`DynamicModel`](../../../swift-client/Sources/JsBaoClient/Schema/DynamicModel.swift) — wires Y.Doc ↔ query engine via update observer.

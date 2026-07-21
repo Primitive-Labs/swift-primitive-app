@@ -1,6 +1,6 @@
 # PrimitiveApp Library
 
-This is a thin SwiftUI layer on top of [`JsBaoClient`](../../../js-bao-wss-swift/swift-client/docs/README.md) that handles the boring-but-necessary parts of every Primitive app: loading config, owning the client, doing the auth dance, and exposing reactive state for documents and CRDT data.
+This is a thin SwiftUI layer on top of [`JsBaoClient`](../../../swift-client/docs/README.md) that handles the boring-but-necessary parts of every Primitive app: loading config, owning the client, doing the auth dance, and exposing reactive state for documents and CRDT data.
 
 If you've used the demo or template and you're wondering "what's this library actually giving me?" — start here.
 
@@ -87,11 +87,11 @@ The lifecycle methods you call from your views:
 - `cleanup()` — tear everything down.
 
 The override hooks (subclass and override these for typed Y.Doc data — see [BaoDataLoader section](#3-baodataloaderdata--reactive-data-loading) below):
-- `onDocumentOpened(documentId:)` — called once a doc is open and connected to the shared store. Refresh your `@Published` model arrays here from the codegen facade (`items = ItemRecord.query()`); no per-doc model wrappers to construct. Make sure you registered your models in `connectClient()` (`GeneratedModels.register(on: client)`) so the facade sees the doc — see [swift-client codegen docs](../../../js-bao-wss-swift/swift-client/docs/codegen.md).
+- `onDocumentOpened(documentId:)` — called once a doc is open and connected to the shared store. Refresh your `@Published` model arrays here from the codegen facade (`items = ItemRecord.query()`); no per-doc model wrappers to construct. Make sure you registered your models in `connectClient()` (`GeneratedModels.register(on: client)`) so the facade sees the doc — see [swift-client codegen docs](../../../swift-client/docs/codegen.md).
 - `onDocumentSynced(documentId:)` — called when initial sync completes.
 - `onDocumentSyncStateChanged(documentId:state:)` — called when a remote change lands and the document reports `state == "synced"`.
 
-> Real subclassing example: [DemoAppState.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/DemoAppState.swift) — adds `taskModel`, `todoModel`, etc. and wires them up in `onDocumentOpened`.
+> Real subclassing example: [DemoAppState.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/DemoAppState.swift) — resolves/opens the default document and reads its records through the codegen facade (`TaskRecord.query()` / `record.save(in:)`); no per-doc model wrappers.
 
 ### 2. `AuthGateView` + `PrimitiveAuthManager` — drop-in auth
 
@@ -122,7 +122,7 @@ States the gate handles internally:
 
 ### 3. `BaoDataLoader<Data>` — reactive data loading
 
-The Swift port of JS [`useBaoDataLoader`](../../../primitive-app-dev/primitive-app/src/composables/useBaoDataLoader.ts). One generic helper that handles "load some data, re-run when X changes, surface errors, debounce, gate on readiness." Generic over `Data` so it works for any return shape: a `[T]`, a single record, a `{ items, count, byCategory }` aggregation struct, anything.
+The Swift port of JS [`useBaoDataLoader`](../../primitive-app/src/composables/useBaoDataLoader.ts). One generic helper that handles "load some data, re-run when X changes, surface errors, debounce, gate on readiness." Generic over `Data` so it works for any return shape: a `[T]`, a single record, a `{ items, count, byCategory }` aggregation struct, anything.
 
 It's a thin orchestrator. The interesting parts are:
 
@@ -157,7 +157,7 @@ ForEach(loader.data ?? []) { ... }
 if let error = loader.error { Text(error.localizedDescription).foregroundStyle(.red) }
 ```
 
-**Codegen model records inside a Y.Doc** (typed CRDT data — codegen-emitted struct + the static `Model.query()`/`save(in:)` facade, see [swift-client codegen docs](../../../js-bao-wss-swift/swift-client/docs/codegen.md)):
+**Codegen model records inside a Y.Doc** (typed CRDT data — codegen-emitted struct + the static `Model.query()`/`save(in:)` facade, see [swift-client codegen docs](../../../swift-client/docs/codegen.md)):
 
 ```swift
 @StateObject private var loader = BaoDataLoader<[TaskRecord]>()
@@ -166,9 +166,9 @@ if let error = loader.error { Text(error.localizedDescription).foregroundStyle(.
     loader.documentReady = demoState.isDefaultDocReady
     loader.bind(
         client: appState.client,
-        subscribeTo: [.onSync, .onDocumentSyncStateChanged]   // truly live: reloads on every CRDT update
+        subscribeTo: [.onModel(subscribe: TaskRecord.subscribe), .onSync]   // truly live: reloads on every TaskRecord change
     ) { _ in
-        demoState.taskModel?.findAll() ?? []
+        try await TaskRecord.findAll()
     }
 }
 .onChange(of: demoState.isDefaultDocReady) { _, r in loader.documentReady = r }
@@ -247,7 +247,7 @@ The interesting part is what happens in the binding's `set` closure: every keyst
 
 ## Patterns that show up everywhere
 
-**1. Subclass `PrimitiveAppState` and register your models.** The base class doesn't know about your record types. Register every codegen'd model **once at startup** by overriding `connectClient()` and calling `GeneratedModels.register(on: client)` right after `await super.connectClient()` — this mirrors each open document into the client's shared cross-document store so the facade and the debug inspector see it. The base class does **not** auto-register; this one line is each app's responsibility (it's a no-op until you add a model to `schema.toml`).
+**1. Subclass `PrimitiveAppState` and register your models.** The base class doesn't know about your record types. Register every codegen'd model **once at startup** by overriding `connectClient()` and calling `GeneratedModels.register(on: client)` right after `await super.connectClient()` — this mirrors each open document into the client's shared cross-document store so the facade and the debug inspector see it. The base class does **not** auto-register; this one line is each app's responsibility (it's a no-op until you add a model to `models.toml`).
 
 Then read and write through the codegen facade — no per-doc model wrappers:
 
@@ -258,7 +258,7 @@ items = ItemRecord.query()
 try ItemRecord(title: "Hi").save(in: documentId)
 ```
 
-Store results as `@Published` properties (typically refreshed in `onDocumentOpened` or via a `BaoDataLoader` `.onModel(subscribe:)`), then read them in views via `@EnvironmentObject var demoState: YourSubclass`. `ItemRecord` is the codegen-emitted struct produced by `swift-bao-codegen` from your `schema.toml`; see [Swift model codegen](../../../js-bao-wss-swift/swift-client/docs/codegen.md).
+Store results as `@Published` properties (typically refreshed in `onDocumentOpened` or via a `BaoDataLoader` `.onModel(subscribe:)`), then read them in views via `@EnvironmentObject var demoState: YourSubclass`. `ItemRecord` is the codegen-emitted struct produced by `swift-bao-codegen` from your `models.toml`; see [Swift model codegen](../../../swift-client/docs/codegen.md).
 
 See [DemoAppState.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/DemoAppState.swift) for the canonical example.
 
@@ -279,8 +279,8 @@ See [PrimitiveAppDemoApp.swift:22-23](../../primitive-app-demo/Sources/Primitive
 
 ## Where to look next
 
-- **Building a new app?** Start with [`primitive-app-template`](../../primitive-app-template/docs/README.md). It's the smallest possible consumer of this library.
+- **Building a new app?** Start with [`primitive-swift-template`](../../../templates/primitive-swift-template/docs/README.md). It's the smallest possible consumer of this library.
 - **Looking for a feature example?** [`primitive-app-demo`](../../primitive-app-demo/docs/README.md) has one demo page per JsBaoClient feature.
 - **Debugging a running app?** [DebugInspector reference](./inspector.md) — the in-process HTTP dashboard that ships in every DEBUG build. Covers all 10 tabs, the HTTP surface, and how to add your own models / tests / tabs to it.
-- **Need to drop down to the raw client?** [`JsBaoClient` docs](../../../js-bao-wss-swift/swift-client/docs/README.md) — and `appState.client` gives you the instance.
-- **Working on codegen model records?** [Swift model codegen](../../../js-bao-wss-swift/swift-client/docs/codegen.md) covers the canonical `schema.toml` → emitted struct → `Model.query()` / `save(in:)` facade flow in depth.
+- **Need to drop down to the raw client?** [`JsBaoClient` docs](../../../swift-client/docs/README.md) — and `appState.client` gives you the instance.
+- **Working on codegen model records?** [Swift model codegen](../../../swift-client/docs/codegen.md) covers the canonical `models.toml` → emitted struct → `Model.query()` / `save(in:)` facade flow in depth.

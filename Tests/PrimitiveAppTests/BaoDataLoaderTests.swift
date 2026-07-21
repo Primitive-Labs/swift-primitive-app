@@ -189,6 +189,206 @@ final class BaoDataLoaderTests: XCTestCase {
 
         loader.unbind()
     }
+
+    // MARK: - showSkeleton (anti-flash gating)
+
+    /// While the document is *opening* (`documentReady == false`) the skeleton
+    /// should show immediately — no load runs yet, so there's nothing for the
+    /// delay timer to gate. This is the dominant initial-load wait.
+    func testShowSkeletonImmediateWhileDocumentOpening() async throws {
+        let loader = BaoDataLoader<Int>()
+
+        // Default is documentReady == true, initialDataLoaded == false → the
+        // skeleton is not showing (a ready-but-loading state is delay-gated).
+        XCTAssertFalse(loader.showSkeleton, "Ready-but-not-loaded should be delay-gated, not immediate")
+
+        // Flip to "document opening": the skeleton must show right away, with
+        // no timer wait.
+        loader.documentReady = false
+        XCTAssertTrue(loader.showSkeleton, "Opening document should show the skeleton immediately")
+    }
+
+    /// A fast reload — a first load that completes before `skeletonDelay` —
+    /// must never flash the skeleton. This is the warm-cache navigation the
+    /// feature exists to protect.
+    func testShowSkeletonSuppressedOnFastLoad() async throws {
+        let loader = BaoDataLoader<Int>()
+        let client = makeTestClient()
+        loader.debounceInterval = 0
+        // Generous delay relative to the load, so the load wins the race.
+        loader.skeletonDelay = 0.2
+        let sawSkeleton = TestFlag()
+
+        loader.bind(client: client, subscribeTo: []) { _ in
+            // Resolve well before skeletonDelay (0.2s).
+            try await Task.sleep(nanoseconds: 20_000_000) // 20ms
+            return 7
+        }
+
+        // Poll across the load window; the skeleton must stay false throughout.
+        for _ in 0..<30 {
+            if loader.showSkeleton { await sawSkeleton.set() }
+            if loader.initialDataLoaded { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertTrue(loader.initialDataLoaded, "Fast load should have completed")
+        let flashed = await sawSkeleton.value
+        XCTAssertFalse(flashed, "Fast warm load must not flash the skeleton")
+        XCTAssertFalse(loader.showSkeleton, "Skeleton stays hidden after a fast load")
+
+        loader.unbind()
+    }
+
+    /// A slow reload — a first load that runs longer than `skeletonDelay` —
+    /// must show the skeleton once the delay elapses, then hide it when the
+    /// load completes.
+    func testShowSkeletonAppearsAfterDelayOnSlowLoad() async throws {
+        let loader = BaoDataLoader<Int>()
+        let client = makeTestClient()
+        loader.debounceInterval = 0
+        loader.skeletonDelay = 0.05 // 50ms
+        let release = TestFlag()
+
+        loader.bind(client: client, subscribeTo: []) { _ in
+            // Hold the load open until the test releases it — comfortably
+            // past the 50ms skeletonDelay.
+            for _ in 0..<200 {
+                if await release.value { break }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            return 42
+        }
+
+        // After the delay elapses (but before we release the load), the
+        // skeleton should be showing.
+        var appeared = false
+        for _ in 0..<40 {
+            if loader.showSkeleton { appeared = true; break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(appeared, "Slow load should show the skeleton after skeletonDelay")
+
+        // Let the load finish; the skeleton must clear.
+        await release.set()
+        for _ in 0..<40 {
+            if loader.initialDataLoaded { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(loader.initialDataLoaded, "Load should complete after release")
+        XCTAssertFalse(loader.showSkeleton, "Skeleton clears once the load completes")
+
+        loader.unbind()
+    }
+
+    /// A first load that FAILS after the skeleton timer has already fired must
+    /// clear the skeleton so the error UI surfaces — not leave `showSkeleton`
+    /// stuck `true` hiding the error behind the skeleton. Regression test for
+    /// the error path not disarming the timer.
+    func testShowSkeletonClearsWhenInitialLoadFails() async throws {
+        struct LoadFailure: Error {}
+
+        let loader = BaoDataLoader<Int>()
+        let client = makeTestClient()
+        loader.debounceInterval = 0
+        loader.skeletonDelay = 0.02 // 20ms — fires before the load fails
+        let release = TestFlag()
+
+        loader.bind(client: client, subscribeTo: []) { _ in
+            // Hold the load open past skeletonDelay so the timer fires and the
+            // skeleton is showing, then fail.
+            for _ in 0..<200 {
+                if await release.value { break }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+            throw LoadFailure()
+        }
+
+        // The skeleton should appear once the delay elapses, before we fail.
+        var appeared = false
+        for _ in 0..<40 {
+            if loader.showSkeleton { appeared = true; break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(appeared, "Skeleton should show after skeletonDelay while the load is in flight")
+
+        // Let the load fail.
+        await release.set()
+        for _ in 0..<40 {
+            if loader.error != nil { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertNotNil(loader.error, "Failed load should surface an error")
+        XCTAssertFalse(loader.initialDataLoaded, "A failed load must not flip initialDataLoaded")
+        XCTAssertFalse(loader.showSkeleton, "A failed load must clear the skeleton so the error UI shows")
+
+        // The timer must not be left armed: wait well past skeletonDelay and
+        // confirm the skeleton stays hidden.
+        try await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertFalse(loader.showSkeleton, "Skeleton stays hidden after a failed load (timer not left running)")
+
+        loader.unbind()
+    }
+
+    /// When a document becomes unready mid-load, the independent skeleton timer
+    /// (and its elapsed flag) must be reset — otherwise a stale
+    /// `skeletonDelayElapsed` flag makes the *next* load flash the skeleton
+    /// immediately instead of applying `skeletonDelay`. Regression test for the
+    /// document-unready transition not resetting the skeleton timer.
+    func testDocumentUnreadyResetsSkeletonTimerForNextLoad() async throws {
+        let loader = BaoDataLoader<Int>()
+        let client = makeTestClient()
+        loader.debounceInterval = 0
+        loader.skeletonDelay = 0.05 // 50ms
+        let callCount = TestCounter()
+
+        loader.bind(client: client, subscribeTo: []) { _ in
+            let call = await callCount.increment()
+            if call == 1 {
+                // First load: hold open past skeletonDelay so the timer fires
+                // and sets the elapsed flag. Cancelled when the document goes
+                // unready below.
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return 1
+            }
+            // Second load (after re-ready): fast — completes before skeletonDelay.
+            try await Task.sleep(nanoseconds: 10_000_000) // 10ms < 50ms
+            return 2
+        }
+
+        // Wait for the first (slow) load's skeleton to appear: the timer has
+        // fired, so skeletonDelayElapsed is now set.
+        var appeared = false
+        for _ in 0..<40 {
+            if loader.showSkeleton { appeared = true; break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(appeared, "First slow load should show the skeleton after skeletonDelay")
+
+        // Interrupt: document becomes unready. This must reset the skeleton
+        // timer state (cancel timer + clear the elapsed flag) alongside
+        // cancelling the in-flight load.
+        loader.documentReady = false
+        XCTAssertTrue(loader.showSkeleton, "An opening (unready) document shows the skeleton immediately")
+
+        // Re-ready fires a fresh, fast load. With the timer reset, the skeleton
+        // must stay hidden throughout — no stale-flag flash.
+        loader.documentReady = true
+        var flashed = false
+        for _ in 0..<60 {
+            if loader.showSkeleton { flashed = true }
+            if loader.initialDataLoaded { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertTrue(loader.initialDataLoaded, "Second fast load should complete")
+        XCTAssertEqual(loader.data, 2, "Second load's result should land")
+        XCTAssertFalse(flashed, "A stale elapsed flag must not flash the skeleton on the re-armed fast load")
+        XCTAssertFalse(loader.showSkeleton, "Skeleton hidden after the fast reload")
+
+        loader.unbind()
+    }
 }
 
 // MARK: - Test helpers

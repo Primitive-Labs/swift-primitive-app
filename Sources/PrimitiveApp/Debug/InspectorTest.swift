@@ -3,24 +3,45 @@
 // and is `#if DEBUG`-only, so release builds never run any of this.
 import Foundation
 
+/// Where a registered test can run.
+///
+/// A test defaults to running in **both** contexts (`environment == nil`). Flag
+/// a test to restrict it to one context; the other context skips it instead of
+/// failing. Mirrors the JS harness's `TestEnvironment` (`"browser" | "node"` in
+/// `primitive-app/src/dev-tools/test-harness/types.ts`):
+///  - `.panel` needs the in-app Debug Inspector host (app state, UI-driven
+///    flows) — the headless runner skips it. This is the analog of JS
+///    `"browser"`.
+///  - `.headless` is only meaningful under the headless CI runner — the in-app
+///    panel skips it. This is the analog of JS `"node"`.
+public enum InspectorTestEnvironment: String, Sendable, Codable {
+    case panel
+    case headless
+}
+
 /// A single test case surfaced to the inspector.
 ///
 /// Tests are pure Swift closures that accept a `TestContext` for logging and assertions.
 /// Throw anything to signal failure — the inspector captures the error message. Tests run
 /// on the main actor, same as the rest of `PrimitiveAppState`, so they can touch
-/// `@MainActor`-isolated state (client, BaoModels, app state) without dancing.
+/// `@MainActor`-isolated state (client, models, app state) without dancing.
 public struct InspectorTest: @unchecked Sendable {
     public let group: String
     public let name: String
+    /// Restrict this test to one context, or `nil` to run in both (the default).
+    /// See `InspectorTestEnvironment`.
+    public let environment: InspectorTestEnvironment?
     public let run: @MainActor (TestContext) async throws -> Void
 
     public init(
         group: String = "Default",
         name: String,
+        environment: InspectorTestEnvironment? = nil,
         run: @escaping @MainActor (TestContext) async throws -> Void
     ) {
         self.group = group
         self.name = name
+        self.environment = environment
         self.run = run
     }
 

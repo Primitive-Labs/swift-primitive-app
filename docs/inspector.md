@@ -256,7 +256,7 @@ Useful for answering:
 - "Are SQL rows in sync with the YMap?" — compare Memory SQL rows against [Documents](#documents) tab records; they should match exactly
 - "How does my filter/index actually translate to SQL?" — write the same query in the box and see the results
 
-Backed by the public `inspectionQueryEngine` accessor on `DynamicModel` (which exposes [`BaoModelQueryEngine`](../../../js-bao-wss/swift-client/Sources/JsBaoClient/Query/BaoModelQueryEngine.swift)) and the `InspectableMemoryDB` wrapper on [InspectableModel.swift](../Sources/PrimitiveApp/Debug/InspectableModel.swift). Legacy `BaoModel<T>` instances don't surface a `memoryDB` yet — their mirror lives in a different place. Models surfaced via the runtime-schema factory (`TypedModel<T>` / `DynamicModel`) are picked up automatically.
+Backed by the public `inspectionQueryEngine` accessor on `DynamicModel` (which exposes [`BaoModelQueryEngine`](../../../swift-client/Sources/JsBaoClient/Query/BaoModelQueryEngine.swift)) and the `InspectableMemoryDB` wrapper on [InspectableModel.swift](../Sources/PrimitiveApp/Debug/InspectableModel.swift). Legacy `BaoModel<T>` instances don't surface a `memoryDB` yet — their mirror lives in a different place. Models surfaced via the runtime-schema factory (`TypedModel<T>` / `DynamicModel`) are picked up automatically.
 
 Sources: [memdb.html](../Sources/PrimitiveApp/Debug/ui/tabs/memdb.html), [memdb.js](../Sources/PrimitiveApp/Debug/ui/tabs/memdb.js).
 

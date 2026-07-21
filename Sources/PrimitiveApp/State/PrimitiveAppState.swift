@@ -263,17 +263,28 @@ open class PrimitiveAppState: ObservableObject {
         defer { isLoadingDocs = false }
 
         do {
-            // Migrated off the deprecated `documents.list()` to the owned +
-            // shared union (via the app-level summary helper), matching the
-            // js-bao deprecation guidance.
-            let summaries = try await client.me.accessibleDocumentSummaries(limit: 50)
-            documents = summaries.map { doc in
-                PrimitiveDocumentInfo(
-                    id: doc.documentId,
-                    title: doc.title,
-                    permission: doc.permission
-                )
+            // Compose the owned + shared union inline (the client exposes only
+            // `ownedDocuments` / `sharedDocuments`, 1:1 with the JS app layer;
+            // both replace the deprecated `documents.list()`). Owned wins on
+            // overlap.
+            async let ownedTask = client.me.ownedDocuments(limit: 50)
+            async let sharedTask = client.me.sharedDocuments(limit: 50)
+            let owned = try await ownedTask
+            let shared = try await sharedTask
+
+            var seen = Set<String>()
+            var merged: [PrimitiveDocumentInfo] = []
+            for info in owned where seen.insert(info.documentId).inserted {
+                merged.append(PrimitiveDocumentInfo(
+                    id: info.documentId, title: info.title, permission: info.permission.rawValue))
             }
+            for share in shared.items where seen.insert(share.document.documentId).inserted {
+                merged.append(PrimitiveDocumentInfo(
+                    id: share.document.documentId,
+                    title: share.document.title,
+                    permission: share.document.permission.rawValue))
+            }
+            documents = merged
         } catch is CancellationError {
             // Task was cancelled — normal SwiftUI lifecycle when a view with
             // `.task { fetchDocuments() }` disappears mid-fetch. Not a real

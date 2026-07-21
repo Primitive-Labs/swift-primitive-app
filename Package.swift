@@ -12,13 +12,18 @@ let package = Package(
             name: "PrimitiveApp",
             targets: ["PrimitiveApp"]
         ),
+        // Headless CI runner for registered InspectorTests (parity with the JS
+        // `primitive-app/testing` vitest adapter). Add this to a test target
+        // ONLY — it is test-support code, not part of a shipped app build.
+        .library(
+            name: "PrimitiveAppTesting",
+            targets: ["PrimitiveAppTesting"]
+        ),
     ],
     dependencies: [
-        // TEMPORARY — pointed at the swift-codegen worktree to
-        // dogfood the build-time TOML → Swift model generator. Swap
-        // back to `../../js-bao-wss/swift-client` once codegen lands
-        // on main. See `TODO_REVERT_SWIFT_CLIENT_PATH.md` at the repo
-        // root for the full revert checklist.
+        // In-repo swift-client. The publish script rewrites this to the
+        // https://github.com/Primitive-Labs/swift-client.git URL for the
+        // standalone mirror.
         .package(url: "https://github.com/Primitive-Labs/swift-client.git", branch: "main"),
     ],
     targets: [
@@ -46,10 +51,27 @@ let package = Package(
                 .linkedLibrary("sqlite3", .when(configuration: .debug)),
             ]
         ),
+        .target(
+            name: "PrimitiveAppTesting",
+            dependencies: [
+                "PrimitiveApp",
+                .product(name: "JsBaoClient", package: "swift-client"),
+            ],
+            path: "Sources/PrimitiveAppTesting"
+        ),
         .testTarget(
             name: "PrimitiveAppTests",
             dependencies: ["PrimitiveApp"],
             path: "Tests/PrimitiveAppTests"
+        ),
+        .testTarget(
+            name: "PrimitiveAppTestingTests",
+            dependencies: [
+                "PrimitiveAppTesting",
+                "PrimitiveApp",
+                .product(name: "JsBaoClient", package: "swift-client"),
+            ],
+            path: "Tests/PrimitiveAppTestingTests"
         ),
     ]
 )

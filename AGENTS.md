@@ -12,4 +12,4 @@ swift build
 
 ## Swift Client
 
-The native Swift client lives at `~/primitive/js-bao-wss-swift/swift-client/`. It mirrors the JS `js-bao-wss-client` API using native URLSession (HTTP), URLSessionWebSocketTask (WS), and YSwift/Yrs (CRDTs). No JavaScript bridge.
+The native Swift client lives at `swift-client/` in this repo. It mirrors the JS `js-bao-wss-client` API using native URLSession (HTTP), URLSessionWebSocketTask (WS), and YSwift/Yrs (CRDTs). No JavaScript bridge.

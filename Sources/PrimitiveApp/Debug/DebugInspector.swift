@@ -420,8 +420,13 @@ public final class DebugInspector: @unchecked Sendable {
                     let name = String(path.dropFirst("/api/models/".count))
                     let docId = request.query["documentId"] ?? ""
                     Task { [weak self] in
-                        let rows = await self?.loadModelRecords(modelName: name, documentId: docId) ?? []
-                        writer.respondJSON(rows)
+                        do {
+                            let rows = try await self?.loadModelRecords(modelName: name, documentId: docId) ?? []
+                            writer.respondJSON(rows)
+                        } catch {
+                            inspectorLog("model load failed: \(name): \(error)", level: "warn")
+                            writer.respondJSON(["error": String(describing: error)], status: 500)
+                        }
                     }
                     return
                 }
@@ -1059,9 +1064,9 @@ public final class DebugInspector: @unchecked Sendable {
     }
 
     @MainActor
-    private func loadModelRecords(modelName: String, documentId: String) async -> [[String: Any]] {
+    private func loadModelRecords(modelName: String, documentId: String) async throws -> [[String: Any]] {
         guard let entry = inspectableModel(name: modelName, documentId: documentId) else { return [] }
-        return entry.loadAll()
+        return try entry.loadAll()
     }
 
     @MainActor
@@ -1116,9 +1121,12 @@ public final class DebugInspector: @unchecked Sendable {
     private func buildTestsPayload() async -> [String: Any] {
         let host = appState as? InspectorTestHost
         let tests = host?.inspectorTests ?? []
-        let items: [[String: Any]] = tests.map { t in
-            ["id": t.id, "group": t.group, "name": t.name]
-        }
+        // Hide `.headless`-only tests: they need the CI runner's bootstrapped,
+        // authenticated client and aren't meaningful in the in-app panel.
+        // Mirrors the JS browser panel skipping `"node"` tests (TestRunner.vue).
+        let items: [[String: Any]] = tests
+            .filter { $0.environment != .headless }
+            .map { t in ["id": t.id, "group": t.group, "name": t.name] }
         return ["tests": items]
     }
 
@@ -1133,6 +1141,12 @@ public final class DebugInspector: @unchecked Sendable {
         let host = appState as? InspectorTestHost
         guard let test = host?.inspectorTests.first(where: { $0.group == group && $0.name == name }) else {
             return ["ok": false, "error": "test not found: \(id)"]
+        }
+        // `.headless`-only tests are hidden from the panel list; refuse if one
+        // is invoked directly (e.g. a stale cached UI) rather than run it in a
+        // context it wasn't written for.
+        if test.environment == .headless {
+            return ["ok": false, "error": "test \(id) is headless-only — run it via the CI runner (PrimitiveAppTesting)"]
         }
         let ctx = TestContext()
         let started = Date()
@@ -1190,9 +1204,15 @@ public final class DebugInspector: @unchecked Sendable {
         //    permission table — exactly the "non-cascade" set.
         var directDocIds = Set<String>()
         do {
-            let summaries = try await client.me.accessibleDocumentSummaries(limit: 500)
-            for item in summaries where !item.documentId.isEmpty {
-                directDocIds.insert(item.documentId)
+            // Owned + shared union, composed inline (the client exposes only
+            // `ownedDocuments` / `sharedDocuments`).
+            async let ownedTask = client.me.ownedDocuments(limit: 500)
+            async let sharedTask = client.me.sharedDocuments(limit: 500)
+            for info in try await ownedTask where !info.documentId.isEmpty {
+                directDocIds.insert(info.documentId)
+            }
+            for share in try await sharedTask.items where !share.document.documentId.isEmpty {
+                directDocIds.insert(share.document.documentId)
             }
         } catch {
             // If the list call fails, fall through with an empty set
