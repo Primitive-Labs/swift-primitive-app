@@ -24,7 +24,7 @@ let package = Package(
         // In-repo swift-client. The publish script rewrites this to the
         // https://github.com/Primitive-Labs/swift-client.git URL for the
         // standalone mirror.
-        .package(url: "https://github.com/Primitive-Labs/swift-client.git", branch: "main"),
+        .package(url: "https://github.com/Primitive-Labs/swift-client.git", branch: "alpha"),
     ],
     targets: [
         .target(
