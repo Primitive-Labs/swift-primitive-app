@@ -46,7 +46,7 @@ public enum LoaderTrigger {
     ///
     /// ```swift
     /// loader.bind(client: client, subscribeTo: [.onModel(subscribe: TaskRecord.subscribe)]) { _ in
-    ///     try await TaskRecord.findAll()
+    ///     try TaskRecord.findAll()
     /// }
     /// ```
     ///
@@ -327,11 +327,13 @@ public final class BaoDataLoader<Data>: ObservableObject {
     ///     `onError`. The closure is `@MainActor`-isolated (it runs on the
     ///     main actor, like the rest of this loader), so you can read
     ///     `@MainActor` state — e.g. a model read like
-    ///     `try await TaskRecord.findAll()` — directly, without wrapping it
-    ///     in `await MainActor.run { … }`. (`find`/`findAll` are async +
-    ///     throwing since js-bao-wss#992: a stored row that fails typed
-    ///     decode throws `PrimitiveDecodeError`, which this loader surfaces
-    ///     on `error`/`onError` instead of silently dropping the row.)
+    ///     `try TaskRecord.findAll()` — directly, without wrapping it
+    ///     in `await MainActor.run { … }`. (`find`/`findAll` are synchronous
+    ///     throwing reads: throwing since js-bao-wss#992 — a stored row that
+    ///     fails typed decode throws `PrimitiveDecodeError`, which this loader
+    ///     surfaces on `error`/`onError` instead of silently dropping the row —
+    ///     and synchronous since js-bao-wss#1156. The closure itself is still
+    ///     `async` so it can also do genuinely async work like REST reads.)
     ///   - onError: Optional error callback (called in addition to setting
     ///     `error`).
     public func bind(
