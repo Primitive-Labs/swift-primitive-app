@@ -168,7 +168,7 @@ if let error = loader.error { Text(error.localizedDescription).foregroundStyle(.
         client: appState.client,
         subscribeTo: [.onModel(subscribe: TaskRecord.subscribe), .onSync]   // truly live: reloads on every TaskRecord change
     ) { _ in
-        try await TaskRecord.findAll()
+        try TaskRecord.findAll()
     }
 }
 .onChange(of: demoState.isDefaultDocReady) { _, r in loader.documentReady = r }

@@ -677,7 +677,7 @@ public final class DebugInspector: @unchecked Sendable {
                 } else if let arr = raw as? [[String: Any]] {
                     rows = arr
                 }
-                return ["ok": true, "rows": rows, "result": raw]
+                return ["ok": true, "rows": rows, "result": raw as Any]
             case "db/records/create":
                 guard let id = body["databaseId"] as? String,
                       let modelName = body["modelName"] as? String,
