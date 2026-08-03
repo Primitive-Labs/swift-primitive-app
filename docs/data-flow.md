@@ -28,7 +28,7 @@ The client has **four** distinct stages your data passes through, and each one s
 
 ### 1. Server — canonical truth
 
-All authoritative state lives server-side. Every connected client gets a consistent view via WebSocket sync. The client never needs the network for *reads* once a doc is open and synced — but it *will* round-trip for things like `documents.list()`, `me.get()`, blob fetches, and admin-data CRUD that doesn't go through Y.
+All authoritative state lives server-side. Every connected client gets a consistent view via WebSocket sync. The client never needs the network for *reads* once a doc is open and synced — but it *will* round-trip for things like `documents.list()`, `me.get()`, blob fetches, and direct record CRUD that doesn't go through Y.
 
 ### 2. Y.Doc — in-memory CRDT (your records, conceptually)
 
@@ -56,7 +56,7 @@ A single `kv_store(store, key, value, metadata, updated_at)` table on disk at `<
 The stores in use:
 - `yjs_docs` — encoded Y.Doc CRDT bytes, one row per document. Binary, not human-readable.
 - `meta` — `LocalMetadataEntry` per doc (title, permission, hasLocalCopy flag).
-- `kv` — `KvCache` rows: hot REST/admin-data results cached for offline reads.
+- `kv` — `KvCache` rows: hot REST/direct-record results cached for offline reads.
 - `auth` — persisted JWT (lives in a *separate* `jsbao_storage.sqlite` file in `auth:<appId>:<namespace>/`, kept distinct so JWT churn never collides with offline data).
 
 This layer is touched only at well-defined moments:

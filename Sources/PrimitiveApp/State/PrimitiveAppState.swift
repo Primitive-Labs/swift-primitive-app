@@ -199,51 +199,49 @@ open class PrimitiveAppState: ObservableObject {
     // MARK: - Event Subscriptions
 
     private func setupEventSubscriptions(_ client: JsBaoClient) {
-        statusSubscription = client.events.on(.status) { [weak self] (event: StatusChangedEvent) in
-            Task { @MainActor in
-                guard let self else { return }
-                switch event.status {
-                case .connected:
-                    self.isConnected = true
-                    self.connectionStatus = "Connected"
-                    self.statusColor = .green
-                case .connecting:
-                    self.connectionStatus = "Connecting..."
-                    self.statusColor = .yellow
-                case .disconnected:
-                    self.isConnected = false
-                    self.connectionStatus = "Disconnected"
-                    self.statusColor = .red
-                }
+        // `observeOnMainActor` delivers on the main actor, so these handlers
+        // touch `@MainActor` state directly — no `Task { @MainActor in }`
+        // wrapper. No replay of the last-known status is needed either: this
+        // runs while the client is being wired, before `connect()`, so nothing
+        // has been emitted yet. (Replay is a `stream(for:)` option; this call
+        // site has no such parameter.)
+        statusSubscription = client.observeOnMainActor(StatusChangedEvent.self) { [weak self] event in
+            guard let self else { return }
+            switch event.status {
+            case .connected:
+                self.isConnected = true
+                self.connectionStatus = "Connected"
+                self.statusColor = .green
+            case .connecting:
+                self.connectionStatus = "Connecting..."
+                self.statusColor = .yellow
+            case .disconnected:
+                self.isConnected = false
+                self.connectionStatus = "Disconnected"
+                self.statusColor = .red
             }
         }
 
-        docLoadedSubscription = client.events.on(.documentLoaded) { [weak self] (event: DocumentLoadedEvent) in
-            Task { @MainActor in
-                self?.addSyncMessage("Loaded from \(event.source) (\(Int(event.elapsedMs))ms)")
+        docLoadedSubscription = client.observeOnMainActor(DocumentLoadedEvent.self) { [weak self] event in
+            self?.addSyncMessage("Loaded from \(event.source) (\(Int(event.elapsedMs))ms)")
+        }
+
+        syncSubscription = client.observeOnMainActor(SyncEvent.self) { [weak self] event in
+            guard let self, event.documentId == self.selectedDocId else { return }
+            self.isSynced = event.synced
+            self.isSyncing = !event.synced
+            if event.synced {
+                self.addSyncMessage("Synced")
+                self.onDocumentSynced(documentId: event.documentId)
             }
         }
 
-        syncSubscription = client.events.on(.sync) { [weak self] (event: SyncEvent) in
-            Task { @MainActor in
-                guard let self, event.documentId == self.selectedDocId else { return }
-                self.isSynced = event.synced
-                self.isSyncing = !event.synced
-                if event.synced {
-                    self.addSyncMessage("Synced")
-                    self.onDocumentSynced(documentId: event.documentId)
-                }
-            }
-        }
-
-        documentSyncStateSubscription = client.events.on(.documentSyncStateChanged) { [weak self] (event: DocumentSyncStateChangedEvent) in
-            Task { @MainActor in
-                guard let self,
-                      event.documentId == self.selectedDocId,
-                      event.state == "synced"
-                else { return }
-                self.onDocumentSyncStateChanged(documentId: event.documentId, state: event.state)
-            }
+        documentSyncStateSubscription = client.observeOnMainActor(DocumentSyncStateChangedEvent.self) { [weak self] event in
+            guard let self,
+                  event.documentId == self.selectedDocId,
+                  event.state == "synced"
+            else { return }
+            self.onDocumentSyncStateChanged(documentId: event.documentId, state: event.state)
         }
     }
 

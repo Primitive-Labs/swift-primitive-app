@@ -188,6 +188,11 @@ public struct PrimitiveLoginView: View {
                 TextField("Email address", text: $email)
                     .textFieldStyle(.roundedBorder)
                     .textContentType(.emailAddress)
+                    // Stable identifier for UI automation. The idb smoke
+                    // scenario (`scripts/smoke-test.sh ui_signin`) locates
+                    // this field by identifier, not by placeholder text, so
+                    // copy changes don't break it. See the DevTools guide.
+                    .accessibilityIdentifier("primitive.login.emailField")
                     #if os(iOS)
                     .keyboardType(.emailAddress)
                     .autocapitalization(.none)
@@ -214,6 +219,7 @@ public struct PrimitiveLoginView: View {
                         .padding(.vertical, 12)
                     }
                     .disabled(email.isEmpty)
+                    .accessibilityIdentifier("primitive.login.emailSubmit")
                 )
             }
 
@@ -276,6 +282,7 @@ public struct PrimitiveLoginView: View {
                 .textFieldStyle(.roundedBorder)
                 .multilineTextAlignment(.center)
                 .font(.system(.title2, design: .monospaced))
+                .accessibilityIdentifier("primitive.login.otpField")
                 #if os(iOS)
                 .keyboardType(.numberPad)
                 #endif
@@ -285,6 +292,7 @@ public struct PrimitiveLoginView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(otpCode.count < otpLength)
+            .accessibilityIdentifier("primitive.login.otpVerify")
 
             Button("Back to login") {
                 authManager.reset()

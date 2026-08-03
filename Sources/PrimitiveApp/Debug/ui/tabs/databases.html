@@ -70,7 +70,7 @@
               <button class="btn btn-sm btn-danger" @click="deleteDb()">delete</button>
             </div>
           </div>
-          <!-- Models: primary CRUD surface. Powered by the DO's admin-data
+          <!-- Models: primary CRUD surface. Powered by the DO's direct records
                routes (admin + db-owner required server-side) — bypasses
                CEL rules so devs can inspect raw state during development.
                Registered operations (the production, CEL-gated path) live
@@ -160,7 +160,7 @@
           </template>
 
           <!-- Record table for the selected model. Pulls from
-               `admin-data/query`; 403s surface as an inline explanation
+               `records/query`; 403s surface as an inline explanation
                (with a nudge to use Operations instead). -->
           <div class="p-3 scroll" style="border-top: 1px solid var(--border); flex: 1;">
             <template x-if="!dbActiveModelName && !dbRecordError">

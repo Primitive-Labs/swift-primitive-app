@@ -279,8 +279,9 @@ public final class DebugInspector: @unchecked Sendable {
                 // List the registered operations for one database. Operations
                 // are app-defined (e.g. `listTasks`, `countByStatus`) that
                 // wrap CEL-gated queries for regular users — the production
-                // path. Coexists with the admin-data path below, which is
-                // admin-only and bypasses CEL.
+                // path. Coexists with the direct `records/*` path below,
+                // which needs manager-or-higher (or an admin role) and
+                // bypasses CEL.
                 let databaseId = request.query["databaseId"] ?? ""
                 Task { [weak self] in
                     let payload = await self?.listDatabaseOperations(databaseId: databaseId) ?? [:]
@@ -655,9 +656,10 @@ public final class DebugInspector: @unchecked Sendable {
                 _ = try await client.collections.removeMember(collectionId: cid, userId: userId)
                 return ["ok": true]
             case "db/records/query":
-                // Generic "list rows in a model" path. Requires app admin +
-                // db owner permissions server-side (admin-data is the
-                // debugging door, not the production one). 403s come back
+                // Generic "list rows in a model" path. Uses the direct
+                // `records/*` routes, which require manager-or-higher on the
+                // database or an app admin/owner role server-side — the
+                // debugging door, not the production one. 403s come back
                 // through the existing HttpError catch block with the
                 // server's explanation.
                 guard let id = body["databaseId"] as? String,
@@ -667,17 +669,23 @@ public final class DebugInspector: @unchecked Sendable {
                 var payload: [String: Any] = ["modelName": modelName]
                 if let filter = body["filter"] as? [String: Any] { payload["filter"] = filter }
                 if let options = body["options"] as? [String: Any] { payload["options"] = options }
-                let raw = try await client.makeRequest(
-                    "POST", "/databases/\(id)/admin-data/query", payload
+                guard let requestBody = inspectorJSONValue(from: payload) else {
+                    return ["ok": false, "error": "filter/options are not JSON-encodable"]
+                }
+                // The rows are the user's own records, so the response shape is
+                // genuinely dynamic — `requestJSON` is the typed spine's
+                // replacement for that case (a `JSONValue` instead of an `Any`
+                // graph), and it still gets the single non-2xx → `HttpError`
+                // policy the deprecated hatch skipped.
+                let raw = try await client.requestJSON(
+                    method: .post,
+                    path: "/databases/\(id)/records/query",
+                    body: requestBody
                 )
                 // DO response shape: { data: [...], hasMore, cursors? }
-                var rows: [[String: Any]] = []
-                if let dict = raw as? [String: Any], let d = dict["data"] as? [[String: Any]] {
-                    rows = d
-                } else if let arr = raw as? [[String: Any]] {
-                    rows = arr
-                }
-                return ["ok": true, "rows": rows, "result": raw as Any]
+                let rowValues = raw?["data"]?.arrayValue ?? raw?.arrayValue ?? []
+                let rows = rowValues.compactMap { inspectorAny($0) as? [String: Any] }
+                return ["ok": true, "rows": rows, "result": inspectorAny(raw)]
             case "db/records/create":
                 guard let id = body["databaseId"] as? String,
                       let modelName = body["modelName"] as? String,
@@ -698,8 +706,13 @@ public final class DebugInspector: @unchecked Sendable {
                 if let stringSets = body["stringSets"] as? [String: Any] {
                     payload["stringSets"] = stringSets
                 }
-                _ = try await client.makeRequest(
-                    "POST", "/databases/\(id)/admin-data/save", payload
+                guard let requestBody = inspectorJSONValue(from: payload) else {
+                    return ["ok": false, "error": "data/stringSets are not JSON-encodable"]
+                }
+                _ = try await client.requestJSON(
+                    method: .post,
+                    path: "/databases/\(id)/records/save",
+                    body: requestBody
                 )
                 return ["ok": true, "id": recordId]
             case "db/records/delete":
@@ -708,9 +721,12 @@ public final class DebugInspector: @unchecked Sendable {
                       let recordId = body["id"] as? String else {
                     return ["ok": false, "error": "databaseId + modelName + id required"]
                 }
-                _ = try await client.makeRequest(
-                    "POST", "/databases/\(id)/admin-data/delete",
-                    ["modelName": modelName, "id": recordId]
+                // Both fields are plain strings, so the body is built as a
+                // `JSONValue` directly rather than bridged from `[String: Any]`.
+                _ = try await client.requestJSON(
+                    method: .post,
+                    path: "/databases/\(id)/records/delete",
+                    body: JSONValue.object(["modelName": .string(modelName), "id": .string(recordId)])
                 )
                 return ["ok": true]
             case "db/records/patch":
@@ -720,9 +736,17 @@ public final class DebugInspector: @unchecked Sendable {
                       let data = body["data"] as? [String: Any] else {
                     return ["ok": false, "error": "databaseId + modelName + id + data required"]
                 }
-                _ = try await client.makeRequest(
-                    "POST", "/databases/\(id)/admin-data/patch",
-                    ["modelName": modelName, "id": recordId, "data": data]
+                guard let patchData = inspectorJSONValue(from: data) else {
+                    return ["ok": false, "error": "data is not JSON-encodable"]
+                }
+                _ = try await client.requestJSON(
+                    method: .post,
+                    path: "/databases/\(id)/records/patch",
+                    body: JSONValue.object([
+                        "modelName": .string(modelName),
+                        "id": .string(recordId),
+                        "data": patchData,
+                    ])
                 )
                 return ["ok": true]
             case "db/execute":
@@ -1338,18 +1362,23 @@ public final class DebugInspector: @unchecked Sendable {
         }
     }
 
+    /// DO shape of `GET /databases/{id}/records/models`: `{ models: ["name", ...] }`.
+    /// Fixed enough to model, so this endpoint takes the typed `request`
+    /// rather than the dynamic `requestJSON` — a shape change now surfaces as
+    /// an `HttpError` with the body attached instead of a silent empty list.
+    private struct DatabaseModelsResponse: Decodable {
+        let models: [String]
+    }
+
     @MainActor
     private func listDatabaseModels(databaseId: String) async -> [String: Any] {
         guard let client, !databaseId.isEmpty else { return [:] }
         do {
-            let raw = try await client.makeRequest(
-                "GET", "/databases/\(databaseId)/records/models", nil
+            let response: DatabaseModelsResponse = try await client.request(
+                method: .get,
+                path: "/databases/\(databaseId)/records/models"
             )
-            // DO shape: `{ models: ["name", ...] }`.
-            if let dict = raw as? [String: Any], let models = dict["models"] as? [String] {
-                return ["models": models]
-            }
-            return ["models": [] as [String]]
+            return ["models": response.models]
         } catch {
             return ["models": [] as [String], "error": error.localizedDescription]
         }
@@ -1466,11 +1495,33 @@ public final class DebugInspector: @unchecked Sendable {
     // MARK: - Event wiring
 
     private func subscribeToEvents(_ client: JsBaoClient) {
+        // All nine subscriptions go through `observeOnMainActor` rather than
+        // draining nine `stream(for:)` loops.
+        //
+        // The Performance tab builds a timeline by sorting these records on
+        // their `ts` (ui/tabs/performance.js), and `ts` is stamped when the
+        // record is written. Nine independent drain tasks would let the writes
+        // land in an order the scheduler picked rather than the order the client
+        // emitted in, so a developer could see `loadedFromSqlite → synced →
+        // syncStateChanged` out of sequence and read scheduler latency as client
+        // latency. `observeOnMainActor` enqueues its main-actor hop synchronously
+        // inside `emit` onto the main queue, which is FIFO, so cross-event order
+        // is preserved. (Serial execution on the main actor alone would not be
+        // enough: the runtime does not promise FIFO scheduling of independent
+        // unstructured tasks, which is what the earlier `Task { @MainActor in … }`
+        // delivery relied on.)
+        //
+        // These are all low-frequency lifecycle events, so the cost of doing the
+        // (lock-guarded, in-memory) ring-buffer write on the main actor is not
+        // worth avoiding. Residual: `ts` is still one hop after the emit, so it
+        // is accurate to within that hop rather than exact — the emit-accurate
+        // timestamp would need a synchronous off-main callback, which the client
+        // does not expose (tracked in #2244).
         let s: [EventSubscription] = [
-            client.events.on(.status) { [weak self] (e: StatusChangedEvent) in
+            client.observeOnMainActor(StatusChangedEvent.self) { [weak self] e in
                 self?.recordEvent(type: "status", fields: ["status": e.status.rawValue])
             },
-            client.events.on(.networkMode) { [weak self] (e: NetworkModeEvent) in
+            client.observeOnMainActor(NetworkModeEvent.self) { [weak self] e in
                 self?.recordEvent(type: "networkMode", fields: [
                     "mode": e.mode.rawValue,
                     "isOnline": e.isOnline,
@@ -1481,7 +1532,7 @@ public final class DebugInspector: @unchecked Sendable {
             // + SSE channel. Per-doc phase aggregation is derived
             // client-side now (tabs/performance.js :: perfPhaseFromEvent)
             // from these same fields.
-            client.events.on(.documentLoaded) { [weak self] (e: DocumentLoadedEvent) in
+            client.observeOnMainActor(DocumentLoadedEvent.self) { [weak self] e in
                 self?.recordEvent(type: "documentLoaded", fields: [
                     "documentId": e.documentId,
                     "source": e.source,
@@ -1490,31 +1541,31 @@ public final class DebugInspector: @unchecked Sendable {
                     "elapsedMs": Int(e.elapsedMs),
                 ])
             },
-            client.events.on(.documentClosed) { [weak self] (e: DocumentClosedEvent) in
+            client.observeOnMainActor(DocumentClosedEvent.self) { [weak self] e in
                 self?.recordEvent(type: "documentClosed", fields: ["documentId": e.documentId])
             },
-            client.events.on(.sync) { [weak self] (e: SyncEvent) in
+            client.observeOnMainActor(SyncEvent.self) { [weak self] e in
                 self?.recordEvent(type: "sync", fields: [
                     "documentId": e.documentId,
                     "synced": e.synced,
                 ])
             },
-            client.events.on(.documentSyncStateChanged) { [weak self] (e: DocumentSyncStateChangedEvent) in
+            client.observeOnMainActor(DocumentSyncStateChangedEvent.self) { [weak self] e in
                 self?.recordEvent(type: "documentSyncStateChanged", fields: [
                     "documentId": e.documentId,
                     "state": e.state,
                 ])
             },
-            client.events.on(.permission) { [weak self] (e: PermissionEvent) in
+            client.observeOnMainActor(PermissionEvent.self) { [weak self] e in
                 self?.recordEvent(type: "permission", fields: [
                     "documentId": e.documentId,
                     "permission": e.permission.rawValue,
                 ])
             },
-            client.events.on(.authSuccess) { [weak self] (e: AuthSuccessEvent) in
+            client.observeOnMainActor(AuthSuccessEvent.self) { [weak self] e in
                 self?.recordEvent(type: "authSuccess", fields: ["cause": e.cause ?? ""])
             },
-            client.events.on(.authFailed) { [weak self] (e: AuthFailedEvent) in
+            client.observeOnMainActor(AuthFailedEvent.self) { [weak self] e in
                 self?.recordEvent(type: "authFailed", fields: [
                     "reason": e.reason ?? "",
                     "message": e.message ?? "",

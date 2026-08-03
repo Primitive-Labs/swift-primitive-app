@@ -73,7 +73,7 @@ That's it. No RPC framework, no native bridge, no WebSocket, no bonus processes.
 
 **`DebugHTTPServer`** — [Sources/PrimitiveApp/Debug/DebugHTTPServer.swift](../Sources/PrimitiveApp/Debug/DebugHTTPServer.swift). ~250 lines of HTTP/1.1 parsing over `NWListener` + `NWConnection`. GET + POST, with Server-Sent Events as a third response mode. No keep-alive — every request gets its own TCP connection. Fine for a dev tool. `ResponseWriter.respond(status:contentType:body:extraHeaders:)` lets routes return raw bytes with arbitrary headers (used for blob content downloads).
 
-**`DebugInspector`** — [Sources/PrimitiveApp/Debug/DebugInspector.swift](../Sources/PrimitiveApp/Debug/DebugInspector.swift). Owns the router closure given to the HTTP server. Holds weak references to the `JsBaoClient` and the `PrimitiveAppState` so it can read live state on demand. Also subscribes to `client.events` once at startup — every incoming event goes into a ring buffer and gets fanned out to any SSE subscribers.
+**`DebugInspector`** — [Sources/PrimitiveApp/Debug/DebugInspector.swift](../Sources/PrimitiveApp/Debug/DebugInspector.swift). Owns the router closure given to the HTTP server. Holds weak references to the `JsBaoClient` and the `PrimitiveAppState` so it can read live state on demand. Also subscribes to nine client events once at startup, through `client.observeOnMainActor(_:handler:)` — every incoming event goes into a ring buffer and gets fanned out to any SSE subscribers. `observeOnMainActor` enqueues its main-actor hop synchronously inside the emit, onto the FIFO main queue, so the records stay in emit order and the Performance tab's timeline sorts correctly.
 
 **`InspectorHTML`** — [Sources/PrimitiveApp/Debug/InspectorHTML.swift](../Sources/PrimitiveApp/Debug/InspectorHTML.swift). Assembles the single-page UI at first access from the split resource tree. Caches the assembled page for the process lifetime.
 
@@ -169,7 +169,7 @@ See [Register a test](#register-a-test).
 
 Two-surface view over server-side databases (`/databases/...`). A single left list + detail view on the right with two parallel CRUD paths:
 
-1. **Models (primary)** — the **admin-data** path. Generic CRUD on rows regardless of whether the app developer registered operations. Server-gated to app admins + db owners. The server routes `POST /databases/:id/admin-data/{query,save,delete,patch}` bypass CEL rules — this is the debugging door. If the current user isn't an admin/owner, the query returns 401/403; the UI auto-expands the **Registered operations** fallback and surfaces a clear explanation.
+1. **Models (primary)** — the direct **records** path. Generic CRUD on rows regardless of whether the app developer registered operations. Server-gated to database managers/owners and app admins/owners. The server routes `POST /databases/:id/records/{query,save,delete,patch}` bypass CEL rules — this is the debugging door. If the current user has neither a database grant nor an admin/owner role, the query returns 401/403; the UI auto-expands the **Registered operations** fallback and surfaces a clear explanation.
 2. **Registered operations (secondary, collapsible)** — the **production** path. CEL-gated, app-defined named operations that the app developer registers via `DatabasesAPI.createOperation(databaseId:, params:)`. Anyone with access to the database can execute an operation within its CEL rule. Clicking an operation runs it and renders the result as a table (array of dicts) or raw JSON.
 
 Both paths coexist so any user can interact with any database: admins/owners browse raw via the Models path; everyone else uses the operations path.
@@ -262,7 +262,7 @@ Sources: [memdb.html](../Sources/PrimitiveApp/Debug/ui/tabs/memdb.html), [memdb.
 
 ### Events
 
-The full live event stream from `client.events` as a filterable log. Pause / auto-scroll / filter-by-type / text filter. The stream is captured continuously (not tab-gated), so switching back to this tab shows you didn't miss anything.
+The full live client-event stream as a filterable log. Pause / auto-scroll / filter-by-type / text filter. The stream is captured continuously (not tab-gated), so switching back to this tab shows you didn't miss anything.
 
 Sources: [events.html](../Sources/PrimitiveApp/Debug/ui/tabs/events.html), [events.js](../Sources/PrimitiveApp/Debug/ui/tabs/events.js). SSE wiring is in [core.js](../Sources/PrimitiveApp/Debug/ui/core.js) (`connectEvents` + `pushEvent`).
 
@@ -305,7 +305,7 @@ All routes are served by [DebugInspector.route(_:writer:)](../Sources/PrimitiveA
 
 | Verb | Path | Returns |
 |------|------|---------|
-| `GET` | `/api/events` | Server-Sent-Events stream. First frame (`init`) replays the last 500 buffered events so new tabs aren't empty; subsequent frames (`event`) push as `client.events` fires |
+| `GET` | `/api/events` | Server-Sent-Events stream. First frame (`init`) replays the last 500 buffered events so new tabs aren't empty; subsequent frames (`event`) push as the client emits |
 
 ### Mutations — `POST /api/action/<verb>` with a JSON body
 
@@ -334,10 +334,10 @@ Every mutation flows through one dispatcher. Body gets parsed, the dispatcher ho
 | `db/rename` | `{ databaseId, title }` | `client.databases.update(databaseId:params:)` |
 | `db/delete` | `{ databaseId }` | `client.databases.delete(databaseId:)` |
 | `db/execute` | `{ databaseId, name, options? }` | `client.databases.executeOperation(databaseId:name:options:)` (CEL-gated) |
-| `db/records/query` | `{ databaseId, modelName, filter?, options? }` | `POST /databases/:id/admin-data/query` (admin-only) |
-| `db/records/create` | `{ databaseId, modelName, data, id? }` | `POST /databases/:id/admin-data/save` (admin-only) |
-| `db/records/patch` | `{ databaseId, modelName, id, data }` | `POST /databases/:id/admin-data/patch` (admin-only) |
-| `db/records/delete` | `{ databaseId, modelName, id }` | `POST /databases/:id/admin-data/delete` (admin-only) |
+| `db/records/query` | `{ databaseId, modelName, filter?, options? }` | `POST /databases/:id/records/query` (manager-or-higher, or an app admin/owner role) |
+| `db/records/create` | `{ databaseId, modelName, data, id? }` | `POST /databases/:id/records/save` (manager-or-higher, or an app admin/owner role) |
+| `db/records/patch` | `{ databaseId, modelName, id, data }` | `POST /databases/:id/records/patch` (manager-or-higher, or an app admin/owner role) |
+| `db/records/delete` | `{ databaseId, modelName, id }` | `POST /databases/:id/records/delete` (manager-or-higher, or an app admin/owner role) |
 | `memdb/exec` | `{ model, documentId, sql }` | `BaoModelQueryEngine.rawQuery(...)` — server-side reject if the SQL isn't `SELECT`/`PRAGMA`/`WITH` |
 
 ## Extension points

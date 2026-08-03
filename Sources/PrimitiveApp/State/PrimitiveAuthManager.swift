@@ -159,35 +159,33 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             }
         }
 
-        authSuccessSubscription = client.events.on(.authSuccess) { [weak self] (event: AuthSuccessEvent) in
-            Task { @MainActor in
-                guard let self else { return }
-                logger.info("Auth success: cause=\(event.cause ?? "unknown")")
-                let newUserId = client.getUserId()
-                if self.userId != nil && self.userId != newUserId {
-                    self.clearSessionScopedPasskeyState()
-                }
-                self.isAuthenticated = true
-                self.userId = newUserId
-                self.isAuthenticating = false
-                self.isAuthRestoring = false
-                self.loginState = .initial
-                self.authError = nil
-                self.handlePostSignIn(cause: event.cause)
-            }
-        }
-
-        authFailedSubscription = client.events.on(.authFailed) { [weak self] (event: AuthFailedEvent) in
-            Task { @MainActor in
-                guard let self else { return }
-                let msg = event.message ?? "Authentication failed"
-                logger.error("Auth failed: \(msg)")
-                self.authError = msg
-                self.isAuthenticating = false
-                self.isAuthRestoring = false
-                self.loginState = .error(msg)
+        // `observeOnMainActor` already delivers on the main actor, so these
+        // handlers touch `@MainActor` state directly.
+        authSuccessSubscription = client.observeOnMainActor(AuthSuccessEvent.self) { [weak self] event in
+            guard let self else { return }
+            logger.info("Auth success: cause=\(event.cause ?? "unknown")")
+            let newUserId = client.getUserId()
+            if self.userId != nil && self.userId != newUserId {
                 self.clearSessionScopedPasskeyState()
             }
+            self.isAuthenticated = true
+            self.userId = newUserId
+            self.isAuthenticating = false
+            self.isAuthRestoring = false
+            self.loginState = .initial
+            self.authError = nil
+            self.handlePostSignIn(cause: event.cause)
+        }
+
+        authFailedSubscription = client.observeOnMainActor(AuthFailedEvent.self) { [weak self] event in
+            guard let self else { return }
+            let msg = event.message ?? "Authentication failed"
+            logger.error("Auth failed: \(msg)")
+            self.authError = msg
+            self.isAuthenticating = false
+            self.isAuthRestoring = false
+            self.loginState = .error(msg)
+            self.clearSessionScopedPasskeyState()
         }
     }
 
