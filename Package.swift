@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
@@ -73,5 +73,10 @@ let package = Package(
             ],
             path: "Tests/PrimitiveAppTestingTests"
         ),
-    ]
+    ],
+    // Swift 6 language mode for the whole package (#2310). Strict concurrency
+    // checking is `complete` and its diagnostics are hard errors, matching the
+    // JsBaoClient package this library is built on. A target added below
+    // inherits the mode — there is no per-target opt-in to remember.
+    swiftLanguageModes: [.v6]
 )

@@ -50,6 +50,7 @@
         </template>
       </select>
       <span class="flex-1"></span>
+      <span class="text-xs" style="color: var(--muted);">+ms = main-actor hop (emit &rarr; recorded)</span>
       <span class="text-xs" style="color: var(--muted);" x-text="perfTimeline.length + ' events'"></span>
     </div>
 
@@ -59,9 +60,15 @@
       <template x-if="!perfTimeline.length">
         <div class="italic text-xs" style="color: var(--muted)">no events yet — open a document to start collecting.</div>
       </template>
-      <template x-for="(e, i) in perfTimeline" :key="e.ts + ':' + e.docId + ':' + i">
+      <template x-for="(e, i) in perfTimeline" :key="e.ts + ':' + e.seq + ':' + e.docId + ':' + i">
         <div class="flex items-start gap-3 py-1.5" style="border-bottom: 1px solid var(--border);">
           <div class="mono text-[10.5px]" style="color: var(--muted); width: 72px; flex-shrink: 0; padding-top: 2px;" x-text="fmtTimeShort(e.ts)"></div>
+          <!-- Emit → handler hop. 0 when the main thread was free; a number
+               here is main-thread latency, not client latency. -->
+          <div class="mono text-[10.5px]" style="width: 52px; flex-shrink: 0; padding-top: 2px; text-align: right;"
+               :style="e.hopMs > 1 ? 'color: var(--yellow);' : 'color: var(--muted);'"
+               :title="'main-actor hop between the client emitting and the inspector recording'"
+               x-text="e.hopMs == null ? '' : '+' + e.hopMs + ' ms'"></div>
           <div style="width: 22px; flex-shrink: 0; text-align: center;" x-text="e.icon"></div>
           <div class="flex-1 min-w-0">
             <div class="text-xs">

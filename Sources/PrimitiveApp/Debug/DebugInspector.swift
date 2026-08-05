@@ -204,10 +204,42 @@ public final class DebugInspector: @unchecked Sendable {
                            socklen_t(cur.pointee.ifa_addr.pointee.sa_len),
                            &host, socklen_t(host.count),
                            nil, 0, NI_NUMERICHOST) == 0 {
-                results.append(String(cString: host))
+                // `String(cString: [CChar])` is deprecated — the array overload
+                // reads past the NUL when the buffer is not NUL-terminated. The
+                // deprecation is only reported from `swift-tools-version: 6.0`
+                // upwards, so it surfaced when this package moved to 6.0
+                // (#2310). Truncate at the NUL ourselves and decode.
+                let end = host.firstIndex(of: 0) ?? host.count
+                results.append(
+                    String(decoding: host[..<end].lazy.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+                )
             }
         }
         return results
+    }
+
+    // MARK: - JSON hand-off across the main-actor boundary
+
+    /// `{}` — what a route sends when the inspector was torn down between the
+    /// request arriving and its payload being built. Unreachable in practice:
+    /// the inspector is the immortal `shared` singleton, so the `[weak self]`
+    /// in each route never nils. That is also why it is one shared literal
+    /// rather than a per-route empty of the right JSON shape.
+    private static let emptyJSON = Data("{}".utf8)
+
+    /// Builds a payload on the main actor and hands back the serialized bytes.
+    ///
+    /// The builders below return `[String: Any]` / `[[String: Any]]`, and
+    /// neither is `Sendable` — `Any` can box a reference type — so under the
+    /// Swift 6 language mode their result cannot be returned from a
+    /// `@MainActor` builder to the nonisolated `Task` that answers the request
+    /// (#2310). Serializing on this side of the hop makes the value that
+    /// actually crosses `Data`, which is `Sendable` outright, so the route
+    /// table needs no unchecked claim of its own.
+    @MainActor
+    private func jsonBytes(_ build: @Sendable @MainActor () async throws -> Any) async rethrows -> Data {
+        let object = try await build()
+        return (try? JSONSerialization.data(withJSONObject: object, options: [])) ?? Self.emptyJSON
     }
 
     // MARK: - Routing
@@ -228,8 +260,9 @@ public final class DebugInspector: @unchecked Sendable {
             switch path {
             case "/api/snapshot":
                 Task { [weak self] in
-                    let snap = await self?.buildSnapshot() ?? [:]
-                    writer.respondJSON(snap)
+                    let body = await self?.jsonBytes { await self?.buildSnapshot() ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/events":
@@ -237,14 +270,16 @@ public final class DebugInspector: @unchecked Sendable {
                 return
             case "/api/models":
                 Task { [weak self] in
-                    let payload = await self?.buildModelsPayload() ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.buildModelsPayload() ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/tests":
                 Task { [weak self] in
-                    let payload = await self?.buildTestsPayload() ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.buildTestsPayload() ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/logs":
@@ -252,8 +287,9 @@ public final class DebugInspector: @unchecked Sendable {
                 return
             case "/api/collections":
                 Task { [weak self] in
-                    let payload = await self?.listCollections() ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.listCollections() ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/cascade-docs":
@@ -265,14 +301,16 @@ public final class DebugInspector: @unchecked Sendable {
                 // per-collection refs docs) never appear there. This
                 // endpoint fills that gap.
                 Task { [weak self] in
-                    let payload = await self?.listCascadeDocs() ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.listCascadeDocs() ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/databases":
                 Task { [weak self] in
-                    let payload = await self?.listDatabases() ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.listDatabases() ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/db/operations":
@@ -284,8 +322,9 @@ public final class DebugInspector: @unchecked Sendable {
                 // bypasses CEL.
                 let databaseId = request.query["databaseId"] ?? ""
                 Task { [weak self] in
-                    let payload = await self?.listDatabaseOperations(databaseId: databaseId) ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.listDatabaseOperations(databaseId: databaseId) ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/db/models":
@@ -294,8 +333,9 @@ public final class DebugInspector: @unchecked Sendable {
                 // any db member (no CEL gate) — just introspection.
                 let databaseId = request.query["databaseId"] ?? ""
                 Task { [weak self] in
-                    let payload = await self?.listDatabaseModels(databaseId: databaseId) ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.listDatabaseModels(databaseId: databaseId) ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/db/describe":
@@ -304,10 +344,12 @@ public final class DebugInspector: @unchecked Sendable {
                 let databaseId = request.query["databaseId"] ?? ""
                 let modelName = request.query["modelName"] ?? ""
                 Task { [weak self] in
-                    let payload = await self?.describeDatabaseModel(
-                        databaseId: databaseId, modelName: modelName
-                    ) ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes {
+                        await self?.describeDatabaseModel(
+                            databaseId: databaseId, modelName: modelName
+                        ) ?? [:]
+                    } ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             default:
@@ -322,15 +364,17 @@ public final class DebugInspector: @unchecked Sendable {
                 let suffix = parts.count > 1 ? parts[1] : ""
                 if suffix == "documents" {
                     Task { [weak self] in
-                        let payload = await self?.listCollectionDocuments(collectionId: collectionId) ?? [:]
-                        writer.respondJSON(payload)
+                        let body = await self?.jsonBytes { await self?.listCollectionDocuments(collectionId: collectionId) ?? [:] }
+                            ?? DebugInspector.emptyJSON
+                        writer.respondJSON(data: body)
                     }
                     return
                 }
                 if suffix == "access" {
                     Task { [weak self] in
-                        let payload = await self?.collectionAccess(collectionId: collectionId) ?? [:]
-                        writer.respondJSON(payload)
+                        let body = await self?.jsonBytes { await self?.collectionAccess(collectionId: collectionId) ?? [:] }
+                            ?? DebugInspector.emptyJSON
+                        writer.respondJSON(data: body)
                     }
                     return
                 }
@@ -340,8 +384,9 @@ public final class DebugInspector: @unchecked Sendable {
             case "/api/blobs":
                 let docId = request.query["documentId"] ?? ""
                 Task { [weak self] in
-                    let payload = await self?.listBlobs(documentId: docId) ?? []
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.listBlobs(documentId: docId) ?? [] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/sqlite/diag":
@@ -356,8 +401,9 @@ public final class DebugInspector: @unchecked Sendable {
                 // engine lives entirely in RAM (`:memory:` SQLite) so this
                 // is the only way to see what the engine actually has.
                 Task { [weak self] in
-                    let payload = await self?.buildMemDBPayload() ?? ["models": []]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.buildMemDBPayload() ?? ["models": []] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/memdb/columns":
@@ -365,8 +411,9 @@ public final class DebugInspector: @unchecked Sendable {
                 let docId = request.query["documentId"] ?? ""
                 let table = request.query["table"] ?? ""
                 Task { [weak self] in
-                    let cols = await self?.memDBColumns(model: model, documentId: docId, table: table) ?? []
-                    writer.respondJSON(cols)
+                    let body = await self?.jsonBytes { await self?.memDBColumns(model: model, documentId: docId, table: table) ?? [] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/memdb/rows":
@@ -375,8 +422,9 @@ public final class DebugInspector: @unchecked Sendable {
                 let table = request.query["table"] ?? ""
                 let limit = Int(request.query["limit"] ?? "200") ?? 200
                 Task { [weak self] in
-                    let rows = await self?.memDBRows(model: model, documentId: docId, table: table, limit: limit) ?? []
-                    writer.respondJSON(rows)
+                    let body = await self?.jsonBytes { await self?.memDBRows(model: model, documentId: docId, table: table, limit: limit) ?? [] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             case "/api/blob/content":
@@ -398,8 +446,9 @@ public final class DebugInspector: @unchecked Sendable {
             case "/api/doc/permissions":
                 let docId = request.query["documentId"] ?? ""
                 Task { [weak self] in
-                    let payload = await self?.docPermissions(documentId: docId) ?? [:]
-                    writer.respondJSON(payload)
+                    let body = await self?.jsonBytes { await self?.docPermissions(documentId: docId) ?? [:] }
+                        ?? DebugInspector.emptyJSON
+                    writer.respondJSON(data: body)
                 }
                 return
             default:
@@ -422,8 +471,10 @@ public final class DebugInspector: @unchecked Sendable {
                     let docId = request.query["documentId"] ?? ""
                     Task { [weak self] in
                         do {
-                            let rows = try await self?.loadModelRecords(modelName: name, documentId: docId) ?? []
-                            writer.respondJSON(rows)
+                            let body = try await self?.jsonBytes {
+                                try await self?.loadModelRecords(modelName: name, documentId: docId) ?? []
+                            } ?? DebugInspector.emptyJSON
+                            writer.respondJSON(data: body)
                         } catch {
                             inspectorLog("model load failed: \(name): \(error)", level: "warn")
                             writer.respondJSON(["error": String(describing: error)], status: 500)
@@ -438,11 +489,9 @@ public final class DebugInspector: @unchecked Sendable {
                         writer.notFound()
                         return
                     }
-                    let result = await self.tryCustomRoute(path: path, query: request.query)
-                    switch result {
-                    case .matched(let body):
-                        writer.respondJSON(body)
-                    case .notMatched:
+                    if let body = await self.customRouteJSON(path: path, query: request.query) {
+                        writer.respondJSON(data: body)
+                    } else {
                         inspectorLog("404: GET \(path)", level: "warn")
                         writer.notFound()
                     }
@@ -454,11 +503,11 @@ public final class DebugInspector: @unchecked Sendable {
         // so we can keep them all on the main actor and share error handling.
         if request.method == "POST", path.hasPrefix("/api/action/") {
             let action = String(path.dropFirst("/api/action/".count))
-            let body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any] ?? [:]
+            let bodyData = request.body
             Task { [weak self] in
-                let result = await self?.dispatchAction(action, body: body)
-                    ?? ["ok": false, "error": "inspector gone"]
-                writer.respondJSON(result)
+                let body = await self?.dispatchActionJSON(action, bodyData: bodyData)
+                    ?? Data(#"{"ok":false,"error":"inspector gone"}"#.utf8)
+                writer.respondJSON(data: body)
             }
             return
         }
@@ -487,6 +536,19 @@ public final class DebugInspector: @unchecked Sendable {
     }
 
     // MARK: - Actions
+
+    /// Parses the request body, dispatches, and serializes the result — all on
+    /// the main actor, so the only thing that crosses back to the request's
+    /// `Task` is `Data` (#2310). Both `[String: Any]` hops that used to cross
+    /// the boundary — the parsed body going in, the result coming out — live
+    /// inside this method now.
+    @MainActor
+    private func dispatchActionJSON(_ action: String, bodyData: Data) async -> Data {
+        let body = (try? JSONSerialization.jsonObject(with: bodyData)) as? [String: Any] ?? [:]
+        let result = await dispatchAction(action, body: body)
+        return (try? JSONSerialization.data(withJSONObject: result, options: []))
+            ?? Data(#"{"ok":false,"error":"result not serializable"}"#.utf8)
+    }
 
     /// Every UI-triggered mutation flows through here. Returns a JSON-ready dict with at
     /// least `{ ok: Bool }` and optional fields the caller cares about (e.g. new doc id).
@@ -948,6 +1010,20 @@ public final class DebugInspector: @unchecked Sendable {
     private enum CustomRouteResult {
         case matched(Any)
         case notMatched
+    }
+
+    /// `tryCustomRoute` plus serialization, so the value that crosses back to
+    /// the request's `Task` is `Data` rather than the non-`Sendable`
+    /// `CustomRouteResult` (#2310). `nil` means "no route matched" — the
+    /// caller 404s.
+    @MainActor
+    private func customRouteJSON(path: String, query: [String: String]) async -> Data? {
+        switch await tryCustomRoute(path: path, query: query) {
+        case .matched(let body):
+            return (try? JSONSerialization.data(withJSONObject: body, options: [])) ?? Self.emptyJSON
+        case .notMatched:
+            return nil
+        }
     }
 
     /// Look up a host-registered `InspectorRoute` matching `path` and invoke its handler.
@@ -1495,82 +1571,87 @@ public final class DebugInspector: @unchecked Sendable {
     // MARK: - Event wiring
 
     private func subscribeToEvents(_ client: JsBaoClient) {
-        // All nine subscriptions go through `observeOnMainActor` rather than
-        // draining nine `stream(for:)` loops.
+        // All nine subscriptions go through `observeOnMainActor(_:withDelivery:)`
+        // rather than draining nine `stream(for:)` loops.
         //
-        // The Performance tab builds a timeline by sorting these records on
-        // their `ts` (ui/tabs/performance.js), and `ts` is stamped when the
-        // record is written. Nine independent drain tasks would let the writes
-        // land in an order the scheduler picked rather than the order the client
-        // emitted in, so a developer could see `loadedFromSqlite → synced →
-        // syncStateChanged` out of sequence and read scheduler latency as client
-        // latency. `observeOnMainActor` enqueues its main-actor hop synchronously
-        // inside `emit` onto the main queue, which is FIFO, so cross-event order
-        // is preserved. (Serial execution on the main actor alone would not be
-        // enough: the runtime does not promise FIFO scheduling of independent
+        // The Performance tab builds a timeline by sorting these records
+        // (ui/tabs/performance.js). Nine independent drain tasks would let the
+        // writes land in an order the scheduler picked rather than the order the
+        // client emitted in, so a developer could see `loadedFromSqlite →
+        // synced → syncStateChanged` out of sequence and read scheduler latency
+        // as client latency.
+        //
+        // Two things keep the timeline honest. Delivery order: the hop is
+        // enqueued synchronously inside `emit` onto the main queue, which is
+        // FIFO. (Serial execution on the main actor alone would not be enough —
+        // the runtime does not promise FIFO scheduling of independent
         // unstructured tasks, which is what the earlier `Task { @MainActor in … }`
-        // delivery relied on.)
+        // delivery relied on.) And the timestamps: `EventDelivery` carries the
+        // instant the client emitted plus the emit sequence, so `ts` is the
+        // emit's own clock rather than the hop's, and `seq` breaks ties when two
+        // events land in the same millisecond. `deliveredTs` records when the
+        // handler actually ran, which makes the hop cost itself visible in the
+        // Performance tab — the number that matters when the main thread is the
+        // thing being debugged.
         //
         // These are all low-frequency lifecycle events, so the cost of doing the
         // (lock-guarded, in-memory) ring-buffer write on the main actor is not
-        // worth avoiding. Residual: `ts` is still one hop after the emit, so it
-        // is accurate to within that hop rather than exact — the emit-accurate
-        // timestamp would need a synchronous off-main callback, which the client
-        // does not expose (tracked in #2244).
+        // worth avoiding. Moving that write and the SSE fan-out off the main
+        // thread is tracked in #2389.
         let s: [EventSubscription] = [
-            client.observeOnMainActor(StatusChangedEvent.self) { [weak self] e in
-                self?.recordEvent(type: "status", fields: ["status": e.status.rawValue])
-            },
-            client.observeOnMainActor(NetworkModeEvent.self) { [weak self] e in
+            client.observeOnMainActor(StatusChangedEvent.self, withDelivery: { [weak self] e, d in
+                self?.recordEvent(type: "status", fields: ["status": e.status.rawValue], delivery: d)
+            }),
+            client.observeOnMainActor(NetworkModeEvent.self, withDelivery: { [weak self] e, d in
                 self?.recordEvent(type: "networkMode", fields: [
                     "mode": e.mode.rawValue,
                     "isOnline": e.isOnline,
                     "reason": e.reason ?? "",
-                ])
-            },
+                ], delivery: d)
+            }),
             // Document-lifecycle events: fed straight into the event ring
             // + SSE channel. Per-doc phase aggregation is derived
             // client-side now (tabs/performance.js :: perfPhaseFromEvent)
             // from these same fields.
-            client.observeOnMainActor(DocumentLoadedEvent.self) { [weak self] e in
+            client.observeOnMainActor(DocumentLoadedEvent.self, withDelivery: { [weak self] e, d in
                 self?.recordEvent(type: "documentLoaded", fields: [
                     "documentId": e.documentId,
                     "source": e.source,
                     "hadData": e.hadData,
                     "bytes": e.bytes ?? 0,
                     "elapsedMs": Int(e.elapsedMs),
-                ])
-            },
-            client.observeOnMainActor(DocumentClosedEvent.self) { [weak self] e in
-                self?.recordEvent(type: "documentClosed", fields: ["documentId": e.documentId])
-            },
-            client.observeOnMainActor(SyncEvent.self) { [weak self] e in
+                ], delivery: d)
+            }),
+            client.observeOnMainActor(DocumentClosedEvent.self, withDelivery: { [weak self] e, d in
+                self?.recordEvent(type: "documentClosed", fields: ["documentId": e.documentId], delivery: d)
+            }),
+            client.observeOnMainActor(SyncEvent.self, withDelivery: { [weak self] e, d in
                 self?.recordEvent(type: "sync", fields: [
                     "documentId": e.documentId,
                     "synced": e.synced,
-                ])
-            },
-            client.observeOnMainActor(DocumentSyncStateChangedEvent.self) { [weak self] e in
+                ], delivery: d)
+            }),
+            client.observeOnMainActor(DocumentSyncStateChangedEvent.self, withDelivery: { [weak self] e, d in
                 self?.recordEvent(type: "documentSyncStateChanged", fields: [
                     "documentId": e.documentId,
                     "state": e.state,
-                ])
-            },
-            client.observeOnMainActor(PermissionEvent.self) { [weak self] e in
+                ], delivery: d)
+            }),
+            client.observeOnMainActor(PermissionEvent.self, withDelivery: { [weak self] e, d in
                 self?.recordEvent(type: "permission", fields: [
                     "documentId": e.documentId,
                     "permission": e.permission.rawValue,
-                ])
-            },
-            client.observeOnMainActor(AuthSuccessEvent.self) { [weak self] e in
-                self?.recordEvent(type: "authSuccess", fields: ["cause": e.cause ?? ""])
-            },
-            client.observeOnMainActor(AuthFailedEvent.self) { [weak self] e in
+                ], delivery: d)
+            }),
+            client.observeOnMainActor(AuthSuccessEvent.self, withDelivery: { [weak self] e, d in
+                self?.recordEvent(type: "authSuccess", fields: ["cause": e.cause ?? ""], delivery: d)
+            }),
+            client.observeOnMainActor(AuthFailedEvent.self, withDelivery: { [weak self] e, d in
                 self?.recordEvent(type: "authFailed", fields: [
                     "reason": e.reason ?? "",
                     "message": e.message ?? "",
-                ])
-            },
+                ], delivery: d)
+            }),
         ]
 
         lock.lock()
@@ -1578,10 +1659,33 @@ public final class DebugInspector: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func recordEvent(type: String, fields: [String: Any]) {
+    /// One ring-buffer / SSE record, built from the payload fields and the
+    /// emit's delivery metadata.
+    ///
+    /// Split out from `recordEvent` so the timeline's timestamp contract is
+    /// testable without standing up the HTTP server: `ts` is the *emit* clock,
+    /// `seq` is the emit order, `deliveredTs` is when this handler ran.
+    static func makeEventRecord(
+        type: String,
+        fields: [String: Any],
+        delivery: EventDelivery,
+        deliveredAt: Date
+    ) -> [String: Any] {
         var record = fields
         record["type"] = type
-        record["ts"] = Int(Date().timeIntervalSince1970 * 1000)
+        record["ts"] = Int(delivery.emittedAt.timeIntervalSince1970 * 1000)
+        record["seq"] = delivery.sequence
+        record["deliveredTs"] = Int(deliveredAt.timeIntervalSince1970 * 1000)
+        return record
+    }
+
+    private func recordEvent(type: String, fields: [String: Any], delivery: EventDelivery) {
+        let record = Self.makeEventRecord(
+            type: type,
+            fields: fields,
+            delivery: delivery,
+            deliveredAt: Date()
+        )
 
         lock.lock()
         events.append(record)
