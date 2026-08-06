@@ -3,8 +3,9 @@
 // row counts come from `/api/snapshot` (populated by
 // `InspectorSQLiteReader.listStores`) so no extra fetch on tab enter.
 // `/api/sqlite/diag` powers the diagnostics toggle: it reports which
-// filesystem roots were scanned, which `appId:userId` subdirs
-// matched, and which jsbao_storage.sqlite file was resolved.
+// filesystem roots were scanned, which namespace subdirs matched
+// (`<appId>`, or legacy `<appId>:<userId>`), and which
+// jsbao_storage.sqlite file was resolved.
 
 function sqliteTab() {
   return {

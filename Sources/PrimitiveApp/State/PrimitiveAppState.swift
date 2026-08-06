@@ -74,16 +74,10 @@ open class PrimitiveAppState: ObservableObject {
     /// and presents the login screen. After the user authenticates, `AuthGateView`
     /// automatically calls `connectClient()`.
     ///
-    /// **Dev-mode CLI auth bypass**: when `loadPrimitiveCliCredentials`
-    /// returns a token (either from a bundled `dev-credentials.json` baked
-    /// in by `run-ios.sh`, or from `~/.primitive/credentials.json` directly
-    /// when `USE_CLI_AUTH=true` is set in `.env.local` for `./run.sh`), it
-    /// gets passed straight into `JsBaoClientOptions.token`. The client is
-    /// then already authenticated, the auth manager picks that up in
-    /// `attach(to:)`, the login UI is skipped entirely, and
-    /// `connectClient()` is invoked automatically here (since
-    /// `AuthGateView`'s `.onChange(of: isAuthenticated)` only fires on
-    /// transitions, not on initial state).
+    /// For a fast dev loop that skips typing a real OTP, use test-user
+    /// sign-in: whitelist a base email in the app's settings
+    /// (`testAccountBaseEmails`), then sign in through the normal login UI
+    /// as the `+primitivetest` derivative address with code `000000`.
     open func initialize() async {
         logger.info("Initializing...")
 
@@ -102,21 +96,12 @@ open class PrimitiveAppState: ObservableObject {
 
         guard let config = appConfig else { return }
 
-        // Dev-mode CLI auth bypass. Gating lives inside the helper:
-        // bundled credentials are always honored (they were placed there
-        // by an explicit build-time opt-in), and ~/.primitive/credentials
-        // is only consulted on macOS when `.env.local` says so.
-        let cliCreds = loadPrimitiveCliCredentials(searchPaths: configSearchPaths())
-        if let cli = cliCreds {
-            logger.info("CLI auth bypass active for \(cli.email ?? "<unknown>")")
-        }
-
         // Create client -- persisted JWT will be loaded automatically if available
         let client = JsBaoClient(options: JsBaoClientOptions(
             apiUrl: config.serverUrl,
             wsUrl: config.wsUrl,
             appId: config.appId,
-            token: cliCreds?.accessToken,
+            token: nil,
             offline: false,
             globalAdminAppId: "global-admin-app",
             logLevel: .info,
@@ -139,25 +124,10 @@ open class PrimitiveAppState: ObservableObject {
         DebugInspector.start(client: client, appState: self, appConfig: config)
         #endif
 
-        // Pre-fill displayed user info from CLI creds so the profile/header
-        // shows something useful before the /me round-trip lands.
-        if let cli = cliCreds {
-            if let name = cli.name { userName = name }
-            if let email = cli.email { userEmail = email }
-        }
-
         isInitialized = true
-
-        // CLI bypass: connect now. The auth manager already saw the
-        // bootstrapped token in attach() and flipped isAuthenticated true,
-        // but AuthGateView's connect-on-auth onChange only fires on
-        // transitions, so we have to kick the connect ourselves.
-        if cliCreds != nil && authManager.isAuthenticated {
-            await connectClient()
-        }
     }
 
-    /// Connect the client (called after auth succeeds or with a dev token).
+    /// Connect the client (called after auth succeeds).
     ///
     /// Subclasses may override to run app-specific setup after the
     /// websocket is up (e.g. resolve a per-user singleton doc, bind
