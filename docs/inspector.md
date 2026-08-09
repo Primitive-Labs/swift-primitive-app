@@ -318,7 +318,7 @@ Every mutation flows through one dispatcher. Body gets parsed, the dispatcher ho
 | `doc/delete` | `{ documentId }` | `client.documents.delete(documentId:)` |
 | `doc/open`   | `{ documentId }` | `appState.selectDocumentAwaiting(_:)` — awaits full sync |
 | `doc/close`  | `{ documentId }` | `client.closeDocument(_:)` |
-| `doc/share`  | `{ documentId, email, permission }` | `client.documents.sendInvitation(documentId:email:permission:)` |
+| `doc/share`  | `{ documentId, email, permission }` | `client.documents.updatePermissions(documentId:params:)` with `.email(_:permission:sendEmail:)` — the deferred-grant flow |
 | `record/create` | `{ model, documentId, values }` | `InspectableModel.createWith(values)` — generates ULID when id absent |
 | `record/delete` | `{ model, documentId, id }` | `InspectableModel.deleteById(id)` |
 | `test/run` | `{ id }` | runs one `InspectorTest`, returns passed/durationMs/output/error |

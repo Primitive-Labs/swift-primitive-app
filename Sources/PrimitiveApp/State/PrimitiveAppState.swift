@@ -256,10 +256,9 @@ open class PrimitiveAppState: ObservableObject {
         } catch is CancellationError {
             // Task was cancelled — normal SwiftUI lifecycle when a view with
             // `.task { fetchDocuments() }` disappears mid-fetch. Not a real
-            // error; the next appearance will refetch.
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            // Same case, but the cancellation surfaced through URLSession
-            // before reaching the Swift task system.
+            // error; the next appearance will refetch. The client normalizes
+            // a `URLSession` cancellation into `CancellationError` too, so
+            // this one clause covers both routes.
         } catch {
             errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
         }

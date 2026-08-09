@@ -137,10 +137,10 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
 
         // Check if already authenticated (e.g. persisted token)
-        let state = client.getAuthState()
+        let state = client.authState
         if state.authenticated {
             isAuthenticated = true
-            userId = client.getUserId()
+            userId = client.userId
             logger.info("Already authenticated: userId=\(self.userId ?? "nil")")
         } else {
             // The client's async setupStorage() may still be trying to
@@ -164,7 +164,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         authSuccessSubscription = client.observeOnMainActor(AuthSuccessEvent.self) { [weak self] event in
             guard let self else { return }
             logger.info("Auth success: cause=\(event.cause ?? "unknown")")
-            let newUserId = client.getUserId()
+            let newUserId = client.userId
             if self.userId != nil && self.userId != newUserId {
                 self.clearSessionScopedPasskeyState()
             }
@@ -335,10 +335,10 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     // MARK: - Passkey enrollment (post-sign-in nudge)
 
     private var passkeyHintKey: String {
-        "primitive.passkey.onDevice.\(client?.getAppId() ?? "default")"
+        "primitive.passkey.onDevice.\(client?.appId ?? "default")"
     }
     private var passkeyDeclinedKey: String {
-        "primitive.passkey.promptDeclined.\(client?.getAppId() ?? "default")"
+        "primitive.passkey.promptDeclined.\(client?.appId ?? "default")"
     }
 
     /// Sign-in causes that should trigger the one-time "add a passkey?"

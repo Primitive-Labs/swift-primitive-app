@@ -1061,10 +1061,10 @@ public final class DebugInspector: @unchecked Sendable {
         let connection: [String: Any] = [
             "isConnected": client.isConnected,
             "connectionId": client.connectionId,
-            "apiUrl": client.getApiUrl(),
+            "apiUrl": client.apiUrl,
             "wsUrl": appConfig.wsUrl,
-            "appId": client.getAppId(),
-            "globalAdminAppId": client.getGlobalAdminAppId(),
+            "appId": client.appId,
+            "globalAdminAppId": client.globalAdminAppId,
         ]
 
         let user: [String: Any] = [

@@ -67,7 +67,7 @@ final class PrimitiveTestBootstrapLiveTests: XCTestCase {
         defer { Task { await client.destroy() } }
 
         // Behavior: the bootstrap authenticated a fresh +primitivetest account.
-        XCTAssertNotNil(client.getUserId(), "bootstrap should leave the client authenticated")
+        XCTAssertNotNil(client.userId, "bootstrap should leave the client authenticated")
 
         // Behavior: the runner executes a registered headless test end to end
         // against the real backend and reports it passed.
