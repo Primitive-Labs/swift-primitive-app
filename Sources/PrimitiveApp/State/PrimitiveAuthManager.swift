@@ -148,12 +148,19 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             // /auth/refresh with the cookie). Block any "logged out" UI
             // until that attempt resolves so we don't flash the login
             // screen on cold start.
+            //
+            // `waitForStorageReady`, not `waitForAuthReady`: the question here
+            // is "has restoration finished?", and finishing with nobody signed
+            // in is the ordinary answer on a fresh install. Since #2657
+            // `waitForAuthReady` throws in exactly that case — it waits for a
+            // USER — so using it would hold the UI for the whole timeout on
+            // every signed-out cold start. `waitForStorageReady` returns as
+            // soon as the init task settles, either way.
             isAuthRestoring = true
             Task { @MainActor [weak self] in
-                do {
-                    try await client.waitForAuthReady(timeout: 15)
-                } catch {
-                    logger.error("waitForAuthReady timed out; treating as restore-failed")
+                let settled = await client.waitForStorageReady(timeout: 15)
+                if !settled {
+                    logger.error("Session restore did not settle within 15s; treating as restore-failed")
                 }
                 self?.isAuthRestoring = false
             }
@@ -345,13 +352,19 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// nudge: a human just authenticated interactively with something
     /// slower than a passkey. Session restores/refreshes don't count, and
     /// neither does a passkey sign-in itself.
+    ///
+    /// The strings are the client's cause vocabulary, which #2657 aligned with
+    /// the JS client: `oauthCallback` / `magicLinkVerify` / `otpVerify` /
+    /// `passkeyAuth`, plus the Swift-only `apple`. (The old set listed
+    /// `"oauth"`, which the client never emitted — a Google sign-in was
+    /// `"google"` — so the nudge never fired for Google until now.)
     private static let enrollmentNudgeCauses: Set<String> = [
-        "oauth", "apple", "otp", "magic_link",
+        "oauthCallback", "apple", "otpVerify", "magicLinkVerify",
     ]
 
     private func handlePostSignIn(cause: String?) {
         guard let cause else { return }
-        if cause == "passkey" {
+        if cause == "passkeyAuth" {
             recordPasskeyOnDevice()
             return
         }
