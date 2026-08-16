@@ -140,15 +140,21 @@ open class PrimitiveAppState: ObservableObject {
         connectionStatus = "Connecting..."
         statusColor = .yellow
 
-        do {
-            try await client.connect()
-            addSyncMessage("Connected")
-        } catch {
-            errorMessage = "Connection error: \(error.localizedDescription)"
+        // `setShouldConnect(true)`, not `connect()`: `logout()` disconnects,
+        // and since #2663 `connect()` does not override an explicit disconnect.
+        // This call is the app saying it wants to be connected, which is what
+        // `setShouldConnect` expresses — so a sign-in after a sign-out
+        // reconnects rather than silently doing nothing. It resolves once the
+        // connect has settled, so the check below reports a failure the same
+        // way the thrown error used to.
+        await client.setShouldConnect(true)
+        guard client.isConnected else {
+            errorMessage = "Connection error: could not connect"
             connectionStatus = "Error"
             statusColor = .red
             return
         }
+        addSyncMessage("Connected")
 
         if let me = try? await client.me.get() {
             // `me.get()` is now a typed `UserProfile` (was a raw dict).
