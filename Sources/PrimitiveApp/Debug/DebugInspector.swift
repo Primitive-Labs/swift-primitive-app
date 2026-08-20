@@ -260,8 +260,11 @@ public final class DebugInspector: @unchecked Sendable {
             switch path {
             case "/api/snapshot":
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.buildSnapshot() ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.buildSnapshot() }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -270,15 +273,21 @@ public final class DebugInspector: @unchecked Sendable {
                 return
             case "/api/models":
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.buildModelsPayload() ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.buildModelsPayload() }
                     writer.respondJSON(data: body)
                 }
                 return
             case "/api/tests":
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.buildTestsPayload() ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.buildTestsPayload() }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -287,8 +296,11 @@ public final class DebugInspector: @unchecked Sendable {
                 return
             case "/api/collections":
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.listCollections() ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.listCollections() }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -301,15 +313,21 @@ public final class DebugInspector: @unchecked Sendable {
                 // per-collection refs docs) never appear there. This
                 // endpoint fills that gap.
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.listCascadeDocs() ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.listCascadeDocs() }
                     writer.respondJSON(data: body)
                 }
                 return
             case "/api/databases":
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.listDatabases() ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.listDatabases() }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -322,8 +340,11 @@ public final class DebugInspector: @unchecked Sendable {
                 // bypasses CEL.
                 let databaseId = request.query["databaseId"] ?? ""
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.listDatabaseOperations(databaseId: databaseId) ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.listDatabaseOperations(databaseId: databaseId) }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -333,8 +354,11 @@ public final class DebugInspector: @unchecked Sendable {
                 // any db member (no CEL gate) — just introspection.
                 let databaseId = request.query["databaseId"] ?? ""
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.listDatabaseModels(databaseId: databaseId) ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.listDatabaseModels(databaseId: databaseId) }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -344,11 +368,15 @@ public final class DebugInspector: @unchecked Sendable {
                 let databaseId = request.query["databaseId"] ?? ""
                 let modelName = request.query["modelName"] ?? ""
                 Task { [weak self] in
-                    let body = await self?.jsonBytes {
-                        await self?.describeDatabaseModel(
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes {
+                        await self.describeDatabaseModel(
                             databaseId: databaseId, modelName: modelName
-                        ) ?? [:]
-                    } ?? DebugInspector.emptyJSON
+                        )
+                    }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -364,16 +392,22 @@ public final class DebugInspector: @unchecked Sendable {
                 let suffix = parts.count > 1 ? parts[1] : ""
                 if suffix == "documents" {
                     Task { [weak self] in
-                        let body = await self?.jsonBytes { await self?.listCollectionDocuments(collectionId: collectionId) ?? [:] }
-                            ?? DebugInspector.emptyJSON
+                        guard let self else {
+                            writer.respondJSON(data: DebugInspector.emptyJSON)
+                            return
+                        }
+                        let body = await self.jsonBytes { await self.listCollectionDocuments(collectionId: collectionId) }
                         writer.respondJSON(data: body)
                     }
                     return
                 }
                 if suffix == "access" {
                     Task { [weak self] in
-                        let body = await self?.jsonBytes { await self?.collectionAccess(collectionId: collectionId) ?? [:] }
-                            ?? DebugInspector.emptyJSON
+                        guard let self else {
+                            writer.respondJSON(data: DebugInspector.emptyJSON)
+                            return
+                        }
+                        let body = await self.jsonBytes { await self.collectionAccess(collectionId: collectionId) }
                         writer.respondJSON(data: body)
                     }
                     return
@@ -384,8 +418,11 @@ public final class DebugInspector: @unchecked Sendable {
             case "/api/blobs":
                 let docId = request.query["documentId"] ?? ""
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.listBlobs(documentId: docId) ?? [] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.listBlobs(documentId: docId) }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -401,8 +438,11 @@ public final class DebugInspector: @unchecked Sendable {
                 // engine lives entirely in RAM (`:memory:` SQLite) so this
                 // is the only way to see what the engine actually has.
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.buildMemDBPayload() ?? ["models": []] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.buildMemDBPayload() }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -411,8 +451,11 @@ public final class DebugInspector: @unchecked Sendable {
                 let docId = request.query["documentId"] ?? ""
                 let table = request.query["table"] ?? ""
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.memDBColumns(model: model, documentId: docId, table: table) ?? [] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.memDBColumns(model: model, documentId: docId, table: table) }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -422,8 +465,11 @@ public final class DebugInspector: @unchecked Sendable {
                 let table = request.query["table"] ?? ""
                 let limit = Int(request.query["limit"] ?? "200") ?? 200
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.memDBRows(model: model, documentId: docId, table: table, limit: limit) ?? [] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.memDBRows(model: model, documentId: docId, table: table, limit: limit) }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -446,8 +492,11 @@ public final class DebugInspector: @unchecked Sendable {
             case "/api/doc/permissions":
                 let docId = request.query["documentId"] ?? ""
                 Task { [weak self] in
-                    let body = await self?.jsonBytes { await self?.docPermissions(documentId: docId) ?? [:] }
-                        ?? DebugInspector.emptyJSON
+                    guard let self else {
+                        writer.respondJSON(data: DebugInspector.emptyJSON)
+                        return
+                    }
+                    let body = await self.jsonBytes { await self.docPermissions(documentId: docId) }
                     writer.respondJSON(data: body)
                 }
                 return
@@ -470,10 +519,14 @@ public final class DebugInspector: @unchecked Sendable {
                     let name = String(path.dropFirst("/api/models/".count))
                     let docId = request.query["documentId"] ?? ""
                     Task { [weak self] in
+                        guard let self else {
+                            writer.respondJSON(data: DebugInspector.emptyJSON)
+                            return
+                        }
                         do {
-                            let body = try await self?.jsonBytes {
-                                try await self?.loadModelRecords(modelName: name, documentId: docId) ?? []
-                            } ?? DebugInspector.emptyJSON
+                            let body = try await self.jsonBytes {
+                                try await self.loadModelRecords(modelName: name, documentId: docId)
+                            }
                             writer.respondJSON(data: body)
                         } catch {
                             inspectorLog("model load failed: \(name): \(error)", level: "warn")
@@ -1295,6 +1348,7 @@ public final class DebugInspector: @unchecked Sendable {
     /// confusing. Each remaining entry carries `collectionIds:
     /// [String]` so the UI can show which collections gave the
     /// cascade access.
+    @MainActor
     private func listCascadeDocs() async -> [String: Any] {
         guard let client else { return ["items": []] }
 
