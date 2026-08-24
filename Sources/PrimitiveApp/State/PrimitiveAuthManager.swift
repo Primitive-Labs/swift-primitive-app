@@ -124,7 +124,11 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             do {
                 let config = try await client.auth.getAuthConfig()
                 self?.availableProviders = AuthProviders(
-                    google: config.hasOAuth,
+                    // The provider enabled AND the `ios` entry usable, from
+                    // one property so the button and the flow cannot disagree
+                    // (#2891). `hasOAuth` was clientId-only, so a web-only app
+                    // rendered a button whose PKCE exchange failed at Google.
+                    google: config.googleSignInAvailable,
                     apple: config.hasApple,
                     passkey: config.hasPasskey,
                     emailOtp: config.otpEnabled,

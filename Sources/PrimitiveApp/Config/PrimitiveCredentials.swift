@@ -3,7 +3,13 @@ import os
 
 private let logger = Logger(subsystem: "com.primitivelabs.PrimitiveApp", category: "Config")
 
-/// App configuration loaded from `primitive.json` (tracked in git).
+/// App configuration loaded from `primitive.json`.
+///
+/// `primitive.json` is a BUILD PRODUCT, not a tracked file: the app ID and
+/// server URL are typed once in `.primitive/config.json`, and
+/// `scripts/resolve-primitive-config.sh` writes the selected Primitive
+/// environment's values into this shape before every build. Never hand-edit
+/// it — change the environment instead (`primitive env use <name>`).
 public struct PrimitiveAppConfig {
     public let appId: String
     public let appName: String
@@ -71,7 +77,12 @@ public enum PrimitiveConfigError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .noAppConfig:
-            return "No primitive.json found. Create one with your appId and serverUrl."
+            return """
+                No primitive.json found. It is generated from the Primitive \
+                environment selected in .primitive/config.json — run \
+                `bash scripts/resolve-primitive-config.sh` (run.sh, run-ios.sh, \
+                archive.sh and the Xcode pre-build phase all do this for you).
+                """
         }
     }
 }
