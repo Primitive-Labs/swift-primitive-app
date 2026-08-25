@@ -108,14 +108,14 @@ var body: some View {
 
 States the gate handles internally:
 1. `!isInitialized` → "Initializing..." spinner
-2. Initialized but unauthenticated → [`PrimitiveLoginView`](../Sources/PrimitiveApp/Views/PrimitiveLoginView.swift) (email magic-link + OTP + optional Google OAuth)
+2. Initialized but unauthenticated → [`PrimitiveLoginView`](../Sources/PrimitiveApp/Views/PrimitiveLoginView.swift) (one email sign-in — one email carrying both a code and a link — plus optional Google OAuth)
 3. Authenticated but not connected → "Connecting..." spinner (auto-fires `connectClient()`)
 4. Connected → your content
 5. Was-connected-now-offline → still shows your content (offline-first)
 6. `errorMessage` set → retry view
 
 `PrimitiveAuthManager` is the thing actually doing the auth; `PrimitiveAppState` exposes one as `authManager`. You pass it to login/profile views by hand. Public methods you might call directly:
-- `requestMagicLink(email:)`, `requestOtp(email:)`, `verifyOtp(email:code:)`
+- `requestEmailSignIn(email:)`, `verifyOtp(email:code:)` — one request sends one email carrying both the code and the link; either credential finishes sign-in
 - `startOAuth()` — Google OAuth via `ASWebAuthenticationSession`
 - `handleMagicLinkCallback(url:)` — for the URL scheme handler
 - `logout()`

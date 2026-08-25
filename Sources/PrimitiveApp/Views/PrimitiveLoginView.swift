@@ -63,14 +63,10 @@ public struct PrimitiveLoginView: View {
                     switch authManager.loginState {
                     case .initial, .error:
                         initialLoginView
-                    case .sendingMagicLink:
-                        ProgressView("Sending link...")
-                    case .magicLinkSent(let sentEmail):
-                        magicLinkSentView(email: sentEmail)
-                    case .sendingOtp:
-                        ProgressView("Sending code...")
-                    case .enteringOtp:
-                        otpEntryView
+                    case .sendingEmail:
+                        ProgressView("Sending sign-in email...")
+                    case .emailSent(let sentEmail):
+                        emailSentView(email: sentEmail)
                     case .verifyingOtp, .authenticating:
                         ProgressView("Signing in...")
                     }
@@ -180,7 +176,7 @@ public struct PrimitiveLoginView: View {
                 .buttonStyle(.bordered)
             }
 
-            if providers.emailOtp || providers.magicLink {
+            if providers.email {
                 if providers.apple || providers.google {
                     dividerWithText("or")
                 }
@@ -198,22 +194,15 @@ public struct PrimitiveLoginView: View {
                     .autocapitalization(.none)
                     #endif
 
-                // OTP over magic link when both are on: no redirect
-                // round-trip, best native experience. Prominent unless a
-                // passkey already leads the screen.
+                // ONE email button (#2884). The email that arrives carries a
+                // code and a link, so there is no method to pick here.
                 emailProminence(
                     Button {
-                        Task {
-                            if providers.emailOtp {
-                                await authManager.requestOtp(email: email)
-                            } else {
-                                await authManager.requestMagicLink(email: email)
-                            }
-                        }
+                        Task { await authManager.requestEmailSignIn(email: email) }
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: providers.emailOtp ? "number" : "envelope")
-                            Text(providers.emailOtp ? "Sign in with Email Code" : "Email me a sign-in link")
+                            Image(systemName: "envelope")
+                            Text("Sign in with Email")
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
@@ -246,37 +235,29 @@ public struct PrimitiveLoginView: View {
         }
     }
 
-    // MARK: - Magic Link Sent
+    // MARK: - Email Sent (one email, both credentials)
 
-    private func magicLinkSentView(email: String) -> some View {
-        VStack(spacing: 12) {
+    private func emailSentView(email sentEmail: String) -> some View {
+        let otpLength = PrimitiveAuthManager.otpLength
+        return VStack(spacing: 12) {
             Image(systemName: "envelope.badge")
                 .font(.system(size: 36))
                 .foregroundStyle(.blue)
             Text("Check your email")
                 .font(.headline)
-            Text("We sent a sign-in link to **\(email)**")
+            Text("We sent a sign-in email to **\(sentEmail)**")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Back to login") {
-                authManager.reset()
-            }
-            .font(.caption)
-            .padding(.top, 8)
-        }
-    }
-
-    // MARK: - OTP Entry
-
-    private var otpEntryView: some View {
-        let otpLength = PrimitiveAuthManager.otpLength
-        return VStack(spacing: 12) {
-            Text("Enter the \(otpLength)-digit code")
-                .font(.headline)
-            Text("Sent to **\(email)**")
-                .font(.subheadline)
+            // Code first, link conditionally: link issuance is fail-closed on
+            // the server (no allow-listed redirect target, no link), and the
+            // request's `{ success: true }` does not say which email went out.
+            // Promising a link the app cannot guarantee makes the supported
+            // code-only fallback look broken.
+            Text("Enter the \(otpLength)-digit code. If that email also has a sign-in link, opening it works too.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
             TextField(String(repeating: "0", count: otpLength), text: $otpCode)
                 .textFieldStyle(.roundedBorder)

@@ -40,10 +40,11 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
 
     public enum LoginState: Equatable {
         case initial
-        case sendingMagicLink
-        case magicLinkSent(email: String)
-        case enteringOtp
-        case sendingOtp
+        case sendingEmail
+        /// ONE "check your email" state (#2884): the same email carries a
+        /// 6-digit code and, when a link can be issued, a sign-in link, so
+        /// there is nothing here to branch on.
+        case emailSent(email: String)
         case verifyingOtp
         case authenticating
         case error(String)
@@ -58,13 +59,14 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         public var google: Bool
         public var apple: Bool
         public var passkey: Bool
-        public var emailOtp: Bool
-        public var magicLink: Bool
+        /// Email sign-in as ONE method (#2884) — one request, one email
+        /// carrying both credentials, so there is nothing to enable
+        /// separately.
+        public var email: Bool
 
         /// Conservative fallback when the config fetch fails: email only.
         public static let emailOnly = AuthProviders(
-            google: false, apple: false, passkey: false,
-            emailOtp: true, magicLink: true
+            google: false, apple: false, passkey: false, email: true
         )
     }
 
@@ -131,8 +133,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
                     google: config.googleSignInAvailable,
                     apple: config.hasApple,
                     passkey: config.hasPasskey,
-                    emailOtp: config.otpEnabled,
-                    magicLink: config.magicLinkEnabled
+                    email: config.emailSignInEnabled
                 )
             } catch {
                 logger.warning("Auth config fetch failed; falling back to email-only login: \(error.localizedDescription)")
@@ -451,24 +452,29 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Magic Link
+    // MARK: - Email sign-in (#2884)
 
-    /// Request a magic link email.
-    public func requestMagicLink(email: String) async {
+    /// Request ONE sign-in email: it carries a 6-digit code and, when the app
+    /// allow-lists this app's callback scheme, a link that opens straight
+    /// back here. The user finishes with whichever suits them.
+    public func requestEmailSignIn(email: String) async {
         guard let client else { return }
 
-        loginState = .sendingMagicLink
+        loginState = .sendingEmail
         authError = nil
 
         let redirectUri = "\(callbackScheme)://auth/magic-link"
 
         do {
-            let _ = try await client.magicLinkRequest(email: email, redirectUri: redirectUri)
-            logger.info("Magic link sent to \(email)")
-            loginState = .magicLinkSent(email: email)
+            let _ = try await client.auth.emailSignInRequest(
+                email: email,
+                redirectUri: redirectUri
+            )
+            logger.info("Sign-in email sent to \(email)")
+            loginState = .emailSent(email: email)
         } catch {
-            logger.error("Magic link request failed: \(error.localizedDescription)")
-            authError = "Failed to send magic link: \(error.localizedDescription)"
+            logger.error("Email sign-in request failed: \(error.localizedDescription)")
+            authError = "Failed to send sign-in email: \(error.localizedDescription)"
             loginState = .error(error.localizedDescription)
         }
     }
@@ -499,27 +505,9 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - OTP
+    // MARK: - Finishing with the code
 
-    /// Request a one-time password sent to email.
-    public func requestOtp(email: String) async {
-        guard let client else { return }
-
-        loginState = .sendingOtp
-        authError = nil
-
-        do {
-            let _ = try await client.otpRequest(email: email)
-            logger.info("OTP sent to \(email)")
-            loginState = .enteringOtp
-        } catch {
-            logger.error("OTP request failed: \(error.localizedDescription)")
-            authError = "Failed to send code: \(error.localizedDescription)"
-            loginState = .error(error.localizedDescription)
-        }
-    }
-
-    /// Verify a one-time password code.
+    /// Verify the 6-digit code from the sign-in email.
     public func verifyOtp(email: String, code: String) async {
         guard let client else { return }
 
@@ -533,7 +521,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             logger.error("OTP verify failed: \(error.localizedDescription)")
             authError = "Invalid code. Please try again."
             isAuthenticating = false
-            loginState = .enteringOtp
+            loginState = .emailSent(email: email)
         }
     }
 

@@ -9,7 +9,7 @@ import CryptoKit
 /// target. Mirrors the JS parallel in
 /// `tests/client/js-bao-client-node-otp-bootstrap.test.ts`: the app is created
 /// in the server's canonical global-admin context (`global-admin-app`) so the
-/// pre-auth, header-less OTP verify resolves it, with `otpEnabled` on and the
+/// pre-auth, header-less OTP verify resolves it, with email sign-in on and the
 /// base email whitelisted for the `+primitivetest` bypass.
 enum LiveBackend {
 
@@ -60,7 +60,7 @@ enum LiveBackend {
         }
     }
 
-    /// Create a public app in the global-admin context with `otpEnabled` and the
+    /// Create a public app in the global-admin context with `emailSignInEnabled` and the
     /// base email whitelisted. Returns the ids needed to bootstrap a client.
     static func createWhitelistedApp() async throws -> WhitelistedApp {
         let ts = Int(Date().timeIntervalSince1970 * 1000)
@@ -84,7 +84,7 @@ enum LiveBackend {
         // original error so the test still fails for the real reason.
         do {
             // Enable OTP (the create path doesn't take it; mirror the JS test's app config).
-            _ = try await admin("PUT", "/admin/api/apps/\(appId)", body: ["otpEnabled": true])
+            _ = try await admin("PUT", "/admin/api/apps/\(appId)", body: ["emailSignInEnabled": true])
             return WhitelistedApp(appId: appId, baseEmail: baseEmail, signInEmail: signInEmail)
         } catch {
             await deleteApp(appId)
