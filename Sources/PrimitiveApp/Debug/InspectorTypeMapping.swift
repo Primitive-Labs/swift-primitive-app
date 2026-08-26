@@ -132,14 +132,17 @@ extension ModelFieldInfo {
 }
 
 extension DocumentPermissionEntry {
+    // `name` is optional on the wire — a user provisioned through the
+    // email-code flow has none (#2980) — so the key is dropped rather than
+    // projected as a null.
     var inspectorDict: [String: Any] {
-        [
+        compactDict([
             "userId": userId,
             "email": email,
             "name": name,
             "permission": permission.rawValue,
             "grantedAt": grantedAt,
-        ]
+        ])
     }
 }
 

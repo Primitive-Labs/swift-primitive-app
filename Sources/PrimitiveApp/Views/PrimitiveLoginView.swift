@@ -195,7 +195,9 @@ public struct PrimitiveLoginView: View {
                     #endif
 
                 // ONE email button (#2884). The email that arrives carries a
-                // code and a link, so there is no method to pick here.
+                // code — and a link too once the app opts in with
+                // `sendsEmailSignInLink` (#2969) — so there is no method to
+                // pick here.
                 emailProminence(
                     Button {
                         Task { await authManager.requestEmailSignIn(email: email) }
@@ -235,7 +237,7 @@ public struct PrimitiveLoginView: View {
         }
     }
 
-    // MARK: - Email Sent (one email, both credentials)
+    // MARK: - Email Sent (one email: the code, plus a link when opted in)
 
     private func emailSentView(email sentEmail: String) -> some View {
         let otpLength = PrimitiveAuthManager.otpLength
