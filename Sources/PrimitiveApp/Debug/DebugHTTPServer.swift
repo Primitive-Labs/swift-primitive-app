@@ -10,26 +10,41 @@ import Network
 /// → parse the request line and query string → hand a Request + ResponseWriter to the router
 /// → the route either writes one response and closes, or opens an SSE channel and keeps the
 /// connection alive while frames are pushed in.
-final class DebugHTTPServer {
+///
+/// ## `@unchecked Sendable` — safety argument
+///
+/// Every callback Network.framework hands back (`newConnectionHandler`,
+/// `stateUpdateHandler`, `receive`, `send` completions) is `@Sendable`, and the
+/// server is started from the main actor but driven from `queue`, so the type
+/// has to cross isolation domains (#2310). All of its stored state is `let`
+/// except `listener`, and that one property is read and written only through
+/// `listenerLock` — there is no path to it that skips the lock.
+final class DebugHTTPServer: @unchecked Sendable {
 
     // MARK: - Types
 
-    struct Request {
+    struct Request: Sendable {
         let method: String
         let path: String
         let query: [String: String]
         let body: Data
     }
 
-    typealias Router = (Request, ResponseWriter) -> Void
+    typealias Router = @Sendable (Request, ResponseWriter) -> Void
 
     // MARK: - State
 
     private let port: UInt16
     private let router: Router
     private let bonjourName: String?
-    private var listener: NWListener?
+    private let listenerLock = NSLock()
+    private var _listener: NWListener?
     private let queue = DispatchQueue(label: "com.primitivelabs.DebugHTTPServer")
+
+    private var listener: NWListener? {
+        get { listenerLock.withLock { _listener } }
+        set { listenerLock.withLock { _listener = newValue } }
+    }
 
     init(port: UInt16, bonjourName: String? = nil, router: @escaping Router) {
         self.port = port
@@ -39,7 +54,7 @@ final class DebugHTTPServer {
 
     // MARK: - Lifecycle
 
-    func start(onStateChange: @escaping (NWListener.State) -> Void = { _ in }) throws {
+    func start(onStateChange: @escaping @Sendable (NWListener.State) -> Void = { _ in }) throws {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
@@ -219,20 +234,40 @@ final class DebugHTTPServer {
 
 /// Hands a routed request one of two outcomes: a single HTTP response, or an SSE channel
 /// that the caller keeps alive and pushes frames through.
-final class ResponseWriter {
+///
+/// ## `@unchecked Sendable` — safety argument
+///
+/// A writer is created on the server's `queue` and most routes answer from a
+/// `Task` on another executor (the inspector builds its payloads on the main
+/// actor), so the writer crosses isolation domains (#2310). The claim covers
+/// exactly one mutable property, `_consumed`, and every read and write of it
+/// goes through `lock` — including the test-and-set in `claim()`, which is what
+/// makes "first responder wins" hold when two callers race. Same shape as
+/// `SSEChannel` below.
+final class ResponseWriter: @unchecked Sendable {
     fileprivate let connection: NWConnection
     fileprivate let queue: DispatchQueue
-    private var consumed = false
+    private let lock = NSLock()
+    private var _consumed = false
 
     fileprivate init(connection: NWConnection, queue: DispatchQueue) {
         self.connection = connection
         self.queue = queue
     }
 
+    /// Atomically marks the writer used. Returns `false` if someone already
+    /// claimed it, so the caller can drop its response on the floor.
+    private func claim() -> Bool {
+        lock.withLock {
+            if _consumed { return false }
+            _consumed = true
+            return true
+        }
+    }
+
     func respond(status: Int = 200, contentType: String, body: Data,
                  extraHeaders: [String: String] = [:]) {
-        guard !consumed else { return }
-        consumed = true
+        guard claim() else { return }
         let statusText = Self.statusText(status)
         var head = "HTTP/1.1 \(status) \(statusText)\r\n"
         head += "Content-Type: \(contentType)\r\n"
@@ -252,6 +287,14 @@ final class ResponseWriter {
 
     func respondJSON(_ object: Any, status: Int = 200) {
         let data = (try? JSONSerialization.data(withJSONObject: object, options: [])) ?? Data("{}".utf8)
+        respondJSON(data: data, status: status)
+    }
+
+    /// Write an already-serialized JSON body. Routes whose payload is built on
+    /// another actor use this, because `Data` crosses the isolation boundary
+    /// and a heterogeneous `[String: Any]` does not — see
+    /// `DebugInspector.jsonBytes` (#2310).
+    func respondJSON(data: Data, status: Int = 200) {
         respond(status: status, contentType: "application/json; charset=utf-8", body: data)
     }
 
@@ -267,8 +310,8 @@ final class ResponseWriter {
     /// caller drives by calling `.send(...)` when events arrive. The connection stays open
     /// until the channel is closed or the peer disconnects.
     func startSSE() -> SSEChannel {
-        assert(!consumed, "ResponseWriter already used")
-        consumed = true
+        let claimed = claim()
+        assert(claimed, "ResponseWriter already used")
         let head = """
         HTTP/1.1 200 OK\r
         Content-Type: text/event-stream; charset=utf-8\r

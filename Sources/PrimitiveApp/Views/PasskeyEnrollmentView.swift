@@ -77,6 +77,10 @@ public struct PasskeyEnrollmentView: View {
                     dismiss()
                 }
                 .font(.subheadline)
+                // Stable identifier so UI automation can dismiss the
+                // one-time post-sign-in passkey prompt before asserting the
+                // post-login screen. See the DevTools guide's idb section.
+                .accessibilityIdentifier("primitive.passkey.notNow")
             }
         }
         .padding(28)

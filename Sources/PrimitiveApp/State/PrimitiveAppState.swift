@@ -74,16 +74,10 @@ open class PrimitiveAppState: ObservableObject {
     /// and presents the login screen. After the user authenticates, `AuthGateView`
     /// automatically calls `connectClient()`.
     ///
-    /// **Dev-mode CLI auth bypass**: when `loadPrimitiveCliCredentials`
-    /// returns a token (either from a bundled `dev-credentials.json` baked
-    /// in by `run-ios.sh`, or from `~/.primitive/credentials.json` directly
-    /// when `USE_CLI_AUTH=true` is set in `.env.local` for `./run.sh`), it
-    /// gets passed straight into `JsBaoClientOptions.token`. The client is
-    /// then already authenticated, the auth manager picks that up in
-    /// `attach(to:)`, the login UI is skipped entirely, and
-    /// `connectClient()` is invoked automatically here (since
-    /// `AuthGateView`'s `.onChange(of: isAuthenticated)` only fires on
-    /// transitions, not on initial state).
+    /// For a fast dev loop that skips typing a real OTP, use test-user
+    /// sign-in: whitelist a base email in the app's settings
+    /// (`testAccountBaseEmails`), then sign in through the normal login UI
+    /// as the `+primitivetest` derivative address with code `000000`.
     open func initialize() async {
         logger.info("Initializing...")
 
@@ -102,21 +96,12 @@ open class PrimitiveAppState: ObservableObject {
 
         guard let config = appConfig else { return }
 
-        // Dev-mode CLI auth bypass. Gating lives inside the helper:
-        // bundled credentials are always honored (they were placed there
-        // by an explicit build-time opt-in), and ~/.primitive/credentials
-        // is only consulted on macOS when `.env.local` says so.
-        let cliCreds = loadPrimitiveCliCredentials(searchPaths: configSearchPaths())
-        if let cli = cliCreds {
-            logger.info("CLI auth bypass active for \(cli.email ?? "<unknown>")")
-        }
-
         // Create client -- persisted JWT will be loaded automatically if available
         let client = JsBaoClient(options: JsBaoClientOptions(
             apiUrl: config.serverUrl,
             wsUrl: config.wsUrl,
             appId: config.appId,
-            token: cliCreds?.accessToken,
+            token: nil,
             offline: false,
             globalAdminAppId: "global-admin-app",
             logLevel: .info,
@@ -139,25 +124,10 @@ open class PrimitiveAppState: ObservableObject {
         DebugInspector.start(client: client, appState: self, appConfig: config)
         #endif
 
-        // Pre-fill displayed user info from CLI creds so the profile/header
-        // shows something useful before the /me round-trip lands.
-        if let cli = cliCreds {
-            if let name = cli.name { userName = name }
-            if let email = cli.email { userEmail = email }
-        }
-
         isInitialized = true
-
-        // CLI bypass: connect now. The auth manager already saw the
-        // bootstrapped token in attach() and flipped isAuthenticated true,
-        // but AuthGateView's connect-on-auth onChange only fires on
-        // transitions, so we have to kick the connect ourselves.
-        if cliCreds != nil && authManager.isAuthenticated {
-            await connectClient()
-        }
     }
 
-    /// Connect the client (called after auth succeeds or with a dev token).
+    /// Connect the client (called after auth succeeds).
     ///
     /// Subclasses may override to run app-specific setup after the
     /// websocket is up (e.g. resolve a per-user singleton doc, bind
@@ -170,15 +140,21 @@ open class PrimitiveAppState: ObservableObject {
         connectionStatus = "Connecting..."
         statusColor = .yellow
 
-        do {
-            try await client.connect()
-            addSyncMessage("Connected")
-        } catch {
-            errorMessage = "Connection error: \(error.localizedDescription)"
+        // `setShouldConnect(true)`, not `connect()`: `logout()` disconnects,
+        // and since #2663 `connect()` does not override an explicit disconnect.
+        // This call is the app saying it wants to be connected, which is what
+        // `setShouldConnect` expresses — so a sign-in after a sign-out
+        // reconnects rather than silently doing nothing. It resolves once the
+        // connect has settled, so the check below reports a failure the same
+        // way the thrown error used to.
+        await client.setShouldConnect(true)
+        guard client.isConnected else {
+            errorMessage = "Connection error: could not connect"
             connectionStatus = "Error"
             statusColor = .red
             return
         }
+        addSyncMessage("Connected")
 
         if let me = try? await client.me.get() {
             // `me.get()` is now a typed `UserProfile` (was a raw dict).
@@ -199,51 +175,49 @@ open class PrimitiveAppState: ObservableObject {
     // MARK: - Event Subscriptions
 
     private func setupEventSubscriptions(_ client: JsBaoClient) {
-        statusSubscription = client.events.on(.status) { [weak self] (event: StatusChangedEvent) in
-            Task { @MainActor in
-                guard let self else { return }
-                switch event.status {
-                case .connected:
-                    self.isConnected = true
-                    self.connectionStatus = "Connected"
-                    self.statusColor = .green
-                case .connecting:
-                    self.connectionStatus = "Connecting..."
-                    self.statusColor = .yellow
-                case .disconnected:
-                    self.isConnected = false
-                    self.connectionStatus = "Disconnected"
-                    self.statusColor = .red
-                }
+        // `observeOnMainActor` delivers on the main actor, so these handlers
+        // touch `@MainActor` state directly — no `Task { @MainActor in }`
+        // wrapper. No replay of the last-known status is needed either: this
+        // runs while the client is being wired, before `connect()`, so nothing
+        // has been emitted yet. (Replay is a `stream(for:)` option; this call
+        // site has no such parameter.)
+        statusSubscription = client.observeOnMainActor(StatusChangedEvent.self) { [weak self] event in
+            guard let self else { return }
+            switch event.status {
+            case .connected:
+                self.isConnected = true
+                self.connectionStatus = "Connected"
+                self.statusColor = .green
+            case .connecting:
+                self.connectionStatus = "Connecting..."
+                self.statusColor = .yellow
+            case .disconnected:
+                self.isConnected = false
+                self.connectionStatus = "Disconnected"
+                self.statusColor = .red
             }
         }
 
-        docLoadedSubscription = client.events.on(.documentLoaded) { [weak self] (event: DocumentLoadedEvent) in
-            Task { @MainActor in
-                self?.addSyncMessage("Loaded from \(event.source) (\(Int(event.elapsedMs))ms)")
+        docLoadedSubscription = client.observeOnMainActor(DocumentLoadedEvent.self) { [weak self] event in
+            self?.addSyncMessage("Loaded from \(event.source) (\(Int(event.elapsedMs))ms)")
+        }
+
+        syncSubscription = client.observeOnMainActor(SyncEvent.self) { [weak self] event in
+            guard let self, event.documentId == self.selectedDocId else { return }
+            self.isSynced = event.synced
+            self.isSyncing = !event.synced
+            if event.synced {
+                self.addSyncMessage("Synced")
+                self.onDocumentSynced(documentId: event.documentId)
             }
         }
 
-        syncSubscription = client.events.on(.sync) { [weak self] (event: SyncEvent) in
-            Task { @MainActor in
-                guard let self, event.documentId == self.selectedDocId else { return }
-                self.isSynced = event.synced
-                self.isSyncing = !event.synced
-                if event.synced {
-                    self.addSyncMessage("Synced")
-                    self.onDocumentSynced(documentId: event.documentId)
-                }
-            }
-        }
-
-        documentSyncStateSubscription = client.events.on(.documentSyncStateChanged) { [weak self] (event: DocumentSyncStateChangedEvent) in
-            Task { @MainActor in
-                guard let self,
-                      event.documentId == self.selectedDocId,
-                      event.state == "synced"
-                else { return }
-                self.onDocumentSyncStateChanged(documentId: event.documentId, state: event.state)
-            }
+        documentSyncStateSubscription = client.observeOnMainActor(DocumentSyncStateChangedEvent.self) { [weak self] event in
+            guard let self,
+                  event.documentId == self.selectedDocId,
+                  event.state == "synced"
+            else { return }
+            self.onDocumentSyncStateChanged(documentId: event.documentId, state: event.state)
         }
     }
 
@@ -288,10 +262,9 @@ open class PrimitiveAppState: ObservableObject {
         } catch is CancellationError {
             // Task was cancelled — normal SwiftUI lifecycle when a view with
             // `.task { fetchDocuments() }` disappears mid-fetch. Not a real
-            // error; the next appearance will refetch.
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            // Same case, but the cancellation surfaced through URLSession
-            // before reaching the Swift task system.
+            // error; the next appearance will refetch. The client normalizes
+            // a `URLSession` cancellation into `CancellationError` too, so
+            // this one clause covers both routes.
         } catch {
             errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
         }

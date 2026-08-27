@@ -40,10 +40,11 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
 
     public enum LoginState: Equatable {
         case initial
-        case sendingMagicLink
-        case magicLinkSent(email: String)
-        case enteringOtp
-        case sendingOtp
+        case sendingEmail
+        /// ONE "check your email" state (#2884): the same email carries a
+        /// 6-digit code and, when a link can be issued, a sign-in link, so
+        /// there is nothing here to branch on.
+        case emailSent(email: String)
         case verifyingOtp
         case authenticating
         case error(String)
@@ -58,13 +59,15 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         public var google: Bool
         public var apple: Bool
         public var passkey: Bool
-        public var emailOtp: Bool
-        public var magicLink: Bool
+        /// Email sign-in as ONE method (#2884) — one request, one email, so
+        /// there is nothing to enable separately. That email carries a
+        /// 6-digit code, and a sign-in link too once the app opts in with
+        /// `sendsEmailSignInLink` (#2969); by default it is code-only.
+        public var email: Bool
 
         /// Conservative fallback when the config fetch fails: email only.
         public static let emailOnly = AuthProviders(
-            google: false, apple: false, passkey: false,
-            emailOtp: true, magicLink: true
+            google: false, apple: false, passkey: false, email: true
         )
     }
 
@@ -97,6 +100,79 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// login button nor the nudge ever appears.
     public var automaticPasskeyEnrollmentPrompt = true
 
+    // MARK: - Callback scheme and link sign-in (#2969)
+
+    /// The `CFBundleURLName` of the app's own URL type, which is where this
+    /// manager reads its callback scheme from. `primitive init` stamps an
+    /// app-unique scheme into the entry with this name; the template ships it
+    /// registered so an emailed link has something to open.
+    public static let urlTypeName = "PrimitiveAuth"
+
+    /// The scheme used when the app registers no `PrimitiveAuth` URL type.
+    /// Shared by every app that never registered one — which is why iOS link
+    /// routing between two of them is ambiguous, and why init stamps.
+    public static let fallbackCallbackScheme = "primitiveapp"
+
+    /// The custom URL scheme this app owns, for the OAuth callback
+    /// (`<scheme>://oauth/callback`) and the emailed sign-in link. Resolved
+    /// once at init: the explicit argument, else the registered
+    /// `PrimitiveAuth` scheme, else `primitiveapp`.
+    public let callbackScheme: String
+
+    /// Whether a sign-in email should also carry a LINK back into this app.
+    ///
+    /// **Off by default, and that default works with no server configuration:**
+    /// the request names no redirect target, so the server issues a code-only
+    /// email without consulting the app's `emailRedirectUris` allow-list. A
+    /// supplied target that misses a non-empty allow-list is refused outright
+    /// (400 `Invalid redirect URI`) — it does not fall back to a code — so
+    /// turning this on takes one server-side step:
+    ///
+    /// 1. Merge this manager's magic-link callback — the URI
+    ///    ``emailSignInRedirectUri(sendsLink:scheme:)`` builds from
+    ///    ``callbackScheme`` — into the existing `[auth].emailRedirectUris` in
+    ///    `config/app.toml`, then run `primitive config push --only app`.
+    /// 2. Set this to `true` before requesting a sign-in email.
+    ///
+    /// A manager constructed with an explicit `callbackScheme:` starts `true`
+    /// — an app that named its own scheme allow-listed it deliberately, and
+    /// keeps its link emails. Set it to `false` to force code-only anyway.
+    ///
+    /// Worth knowing before you turn it on: a custom-scheme link only opens on
+    /// a device that has the app installed (dead in the Simulator, dead
+    /// cross-device, and many webmail clients will not render a non-http(s)
+    /// href at all). The 6-digit code is the credential that always works.
+    public var sendsEmailSignInLink: Bool
+
+    /// The app's registered callback scheme, from a `CFBundleURLTypes` array.
+    ///
+    /// Pure and static so the resolution is unit-testable without a bundle.
+    /// Takes the first scheme of the URL type named ``urlTypeName``; anything
+    /// missing — no such entry, no schemes in it — resolves the shared
+    /// fallback rather than guessing at another app's entry (a Google
+    /// reversed client ID, say).
+    public static func resolveCallbackScheme(urlTypes: [[String: Any]]?) -> String {
+        guard let urlTypes else { return fallbackCallbackScheme }
+        for urlType in urlTypes {
+            guard urlType["CFBundleURLName"] as? String == urlTypeName else { continue }
+            guard let schemes = urlType["CFBundleURLSchemes"] as? [String],
+                  let scheme = schemes.first,
+                  !scheme.isEmpty else { break }
+            return scheme
+        }
+        return fallbackCallbackScheme
+    }
+
+    /// The redirect target a sign-in email request carries, if any.
+    ///
+    /// The ONE place that decides the request's shape: `nil` is a code-only
+    /// email (no allow-list involved), and the scheme's callback is the link.
+    /// Pure and static so the decision is tested rather than reviewed —
+    /// sending a target unconditionally is exactly the bug this fixes.
+    public static func emailSignInRedirectUri(sendsLink: Bool, scheme: String) -> String? {
+        sendsLink ? "\(scheme)://auth/magic-link" : nil
+    }
+
     // MARK: - Private
 
     private weak var client: JsBaoClient?
@@ -104,11 +180,19 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     private var authFailedSubscription: EventSubscription?
     private var authStateSubscription: EventSubscription?
 
-    /// The custom URL scheme for OAuth/magic link callbacks (e.g. "primitiveapp")
-    private let callbackScheme: String
-
-    public init(callbackScheme: String = "primitiveapp") {
-        self.callbackScheme = callbackScheme
+    /// - Parameter callbackScheme: The app's own URL scheme. Omit it and the
+    ///   scheme registered under the ``urlTypeName`` URL type is used (falling
+    ///   back to `primitiveapp`); pass one and this manager also starts out
+    ///   sending link sign-in emails, the way a deliberately wired app did
+    ///   before #2969.
+    public init(callbackScheme: String? = nil) {
+        self.callbackScheme =
+            callbackScheme
+            ?? Self.resolveCallbackScheme(
+                urlTypes: Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes")
+                    as? [[String: Any]]
+            )
+        self.sendsEmailSignInLink = callbackScheme != nil
         super.init()
     }
 
@@ -117,6 +201,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         self.client = client
         hasLocalPasskeyHint = UserDefaults.standard.bool(forKey: passkeyHintKey)
 
+        // The scheme decides where OAuth and any emailed sign-in link come
+        // back to, and every misconfiguration of it is otherwise silent — a
+        // dead tap, or a 400 no one sees. Say it once, out loud.
+        logger.info(
+            "Callback scheme: \(self.callbackScheme, privacy: .public) (link sign-in emails: \(self.sendsEmailSignInLink ? "on" : "off", privacy: .public))"
+        )
+
         // Load the server's configured sign-in methods so the login view
         // can render the right buttons. Email affordances stay on while
         // loading / on failure (AuthProviders.emailOnly fallback).
@@ -124,11 +215,14 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             do {
                 let config = try await client.auth.getAuthConfig()
                 self?.availableProviders = AuthProviders(
-                    google: config.hasOAuth,
+                    // The provider enabled AND the `ios` entry usable, from
+                    // one property so the button and the flow cannot disagree
+                    // (#2891). `hasOAuth` was clientId-only, so a web-only app
+                    // rendered a button whose PKCE exchange failed at Google.
+                    google: config.googleSignInAvailable,
                     apple: config.hasApple,
                     passkey: config.hasPasskey,
-                    emailOtp: config.otpEnabled,
-                    magicLink: config.magicLinkEnabled
+                    email: config.emailSignInEnabled
                 )
             } catch {
                 logger.warning("Auth config fetch failed; falling back to email-only login: \(error.localizedDescription)")
@@ -137,10 +231,10 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
 
         // Check if already authenticated (e.g. persisted token)
-        let state = client.getAuthState()
+        let state = client.authState
         if state.authenticated {
             isAuthenticated = true
-            userId = client.getUserId()
+            userId = client.userId
             logger.info("Already authenticated: userId=\(self.userId ?? "nil")")
         } else {
             // The client's async setupStorage() may still be trying to
@@ -148,46 +242,51 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             // /auth/refresh with the cookie). Block any "logged out" UI
             // until that attempt resolves so we don't flash the login
             // screen on cold start.
+            //
+            // `waitForStorageReady`, not `waitForAuthReady`: the question here
+            // is "has restoration finished?", and finishing with nobody signed
+            // in is the ordinary answer on a fresh install. Since #2657
+            // `waitForAuthReady` throws in exactly that case — it waits for a
+            // USER — so using it would hold the UI for the whole timeout on
+            // every signed-out cold start. `waitForStorageReady` returns as
+            // soon as the init task settles, either way.
             isAuthRestoring = true
             Task { @MainActor [weak self] in
-                do {
-                    try await client.waitForAuthReady(timeout: 15)
-                } catch {
-                    logger.error("waitForAuthReady timed out; treating as restore-failed")
+                let settled = await client.waitForStorageReady(timeout: 15)
+                if !settled {
+                    logger.error("Session restore did not settle within 15s; treating as restore-failed")
                 }
                 self?.isAuthRestoring = false
             }
         }
 
-        authSuccessSubscription = client.events.on(.authSuccess) { [weak self] (event: AuthSuccessEvent) in
-            Task { @MainActor in
-                guard let self else { return }
-                logger.info("Auth success: cause=\(event.cause ?? "unknown")")
-                let newUserId = client.getUserId()
-                if self.userId != nil && self.userId != newUserId {
-                    self.clearSessionScopedPasskeyState()
-                }
-                self.isAuthenticated = true
-                self.userId = newUserId
-                self.isAuthenticating = false
-                self.isAuthRestoring = false
-                self.loginState = .initial
-                self.authError = nil
-                self.handlePostSignIn(cause: event.cause)
-            }
-        }
-
-        authFailedSubscription = client.events.on(.authFailed) { [weak self] (event: AuthFailedEvent) in
-            Task { @MainActor in
-                guard let self else { return }
-                let msg = event.message ?? "Authentication failed"
-                logger.error("Auth failed: \(msg)")
-                self.authError = msg
-                self.isAuthenticating = false
-                self.isAuthRestoring = false
-                self.loginState = .error(msg)
+        // `observeOnMainActor` already delivers on the main actor, so these
+        // handlers touch `@MainActor` state directly.
+        authSuccessSubscription = client.observeOnMainActor(AuthSuccessEvent.self) { [weak self] event in
+            guard let self else { return }
+            logger.info("Auth success: cause=\(event.cause ?? "unknown")")
+            let newUserId = client.userId
+            if self.userId != nil && self.userId != newUserId {
                 self.clearSessionScopedPasskeyState()
             }
+            self.isAuthenticated = true
+            self.userId = newUserId
+            self.isAuthenticating = false
+            self.isAuthRestoring = false
+            self.loginState = .initial
+            self.authError = nil
+            self.handlePostSignIn(cause: event.cause)
+        }
+
+        authFailedSubscription = client.observeOnMainActor(AuthFailedEvent.self) { [weak self] event in
+            guard let self else { return }
+            let msg = event.message ?? "Authentication failed"
+            logger.error("Auth failed: \(msg)")
+            self.authError = msg
+            self.isAuthenticating = false
+            self.isAuthRestoring = false
+            self.loginState = .error(msg)
+            self.clearSessionScopedPasskeyState()
         }
     }
 
@@ -337,23 +436,29 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     // MARK: - Passkey enrollment (post-sign-in nudge)
 
     private var passkeyHintKey: String {
-        "primitive.passkey.onDevice.\(client?.getAppId() ?? "default")"
+        "primitive.passkey.onDevice.\(client?.appId ?? "default")"
     }
     private var passkeyDeclinedKey: String {
-        "primitive.passkey.promptDeclined.\(client?.getAppId() ?? "default")"
+        "primitive.passkey.promptDeclined.\(client?.appId ?? "default")"
     }
 
     /// Sign-in causes that should trigger the one-time "add a passkey?"
     /// nudge: a human just authenticated interactively with something
     /// slower than a passkey. Session restores/refreshes don't count, and
     /// neither does a passkey sign-in itself.
+    ///
+    /// The strings are the client's cause vocabulary, which #2657 aligned with
+    /// the JS client: `oauthCallback` / `magicLinkVerify` / `otpVerify` /
+    /// `passkeyAuth`, plus the Swift-only `apple`. (The old set listed
+    /// `"oauth"`, which the client never emitted — a Google sign-in was
+    /// `"google"` — so the nudge never fired for Google until now.)
     private static let enrollmentNudgeCauses: Set<String> = [
-        "oauth", "apple", "otp", "magic_link",
+        "oauthCallback", "apple", "otpVerify", "magicLinkVerify",
     ]
 
     private func handlePostSignIn(cause: String?) {
         guard let cause else { return }
-        if cause == "passkey" {
+        if cause == "passkeyAuth" {
             recordPasskeyOnDevice()
             return
         }
@@ -436,24 +541,35 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Magic Link
+    // MARK: - Email sign-in (#2884)
 
-    /// Request a magic link email.
-    public func requestMagicLink(email: String) async {
+    /// Request ONE sign-in email carrying a 6-digit code — and, when
+    /// ``sendsEmailSignInLink`` is on, a link that opens straight back here.
+    ///
+    /// By default no redirect target is sent at all, so the email is code-only
+    /// and needs no app settings. See ``sendsEmailSignInLink`` for the opt-in
+    /// and what it requires of the app's allow-list.
+    public func requestEmailSignIn(email: String) async {
         guard let client else { return }
 
-        loginState = .sendingMagicLink
+        loginState = .sendingEmail
         authError = nil
 
-        let redirectUri = "\(callbackScheme)://auth/magic-link"
+        let redirectUri = Self.emailSignInRedirectUri(
+            sendsLink: sendsEmailSignInLink,
+            scheme: callbackScheme
+        )
 
         do {
-            let _ = try await client.magicLinkRequest(email: email, redirectUri: redirectUri)
-            logger.info("Magic link sent to \(email)")
-            loginState = .magicLinkSent(email: email)
+            let _ = try await client.auth.emailSignInRequest(
+                email: email,
+                redirectUri: redirectUri
+            )
+            logger.info("Sign-in email sent to \(email)")
+            loginState = .emailSent(email: email)
         } catch {
-            logger.error("Magic link request failed: \(error.localizedDescription)")
-            authError = "Failed to send magic link: \(error.localizedDescription)"
+            logger.error("Email sign-in request failed: \(error.localizedDescription)")
+            authError = "Failed to send sign-in email: \(error.localizedDescription)"
             loginState = .error(error.localizedDescription)
         }
     }
@@ -484,27 +600,9 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - OTP
+    // MARK: - Finishing with the code
 
-    /// Request a one-time password sent to email.
-    public func requestOtp(email: String) async {
-        guard let client else { return }
-
-        loginState = .sendingOtp
-        authError = nil
-
-        do {
-            let _ = try await client.otpRequest(email: email)
-            logger.info("OTP sent to \(email)")
-            loginState = .enteringOtp
-        } catch {
-            logger.error("OTP request failed: \(error.localizedDescription)")
-            authError = "Failed to send code: \(error.localizedDescription)"
-            loginState = .error(error.localizedDescription)
-        }
-    }
-
-    /// Verify a one-time password code.
+    /// Verify the 6-digit code from the sign-in email.
     public func verifyOtp(email: String, code: String) async {
         guard let client else { return }
 
@@ -518,7 +616,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             logger.error("OTP verify failed: \(error.localizedDescription)")
             authError = "Invalid code. Please try again."
             isAuthenticating = false
-            loginState = .enteringOtp
+            loginState = .emailSent(email: email)
         }
     }
 

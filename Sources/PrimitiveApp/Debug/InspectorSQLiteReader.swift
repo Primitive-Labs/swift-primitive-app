@@ -4,10 +4,10 @@ import SQLite3
 
 /// Read-only SQLite inspector for the JsBaoClient's kv_store database.
 ///
-/// The client keeps its offline data in `<docs>/JsBaoClient/<appId>:<userId>/jsbao_storage.sqlite`
-/// with a single `kv_store(store, key, value, metadata, updated_at)` table. The namespace
-/// (`appId:userId`) is only known after auth, so we scan for directories that start with
-/// `<appId>:` and pick the most-recently-modified one.
+/// The client keeps its offline data in `<docs>/JsBaoClient/<appId>/jsbao_storage.sqlite`
+/// with a single `kv_store(store, key, value, metadata, updated_at)` table. Installs that
+/// predate #853 instead have a per-namespace `<appId>:<userId>` directory, so we accept
+/// both layouts and pick the most-recently-modified directory that actually holds the file.
 ///
 /// WAL mode is enabled by the writer, which means a read-only handle from this process can
 /// safely coexist with the writer handle — no lock contention, and we see committed state.
@@ -38,6 +38,16 @@ struct InspectorSQLiteReader {
 
     let appId: String
 
+    /// Test seam: replaces the `FileManager`-derived `JsBaoClient` roots with
+    /// explicit ones so the directory-matching rules can be exercised against a
+    /// temporary directory. `nil` in every app build.
+    let rootsOverride: [String]?
+
+    init(appId: String, rootsOverride: [String]? = nil) {
+        self.appId = appId
+        self.rootsOverride = rootsOverride
+    }
+
     // MARK: - Public surface
 
     struct StoreInfo {
@@ -53,7 +63,7 @@ struct InspectorSQLiteReader {
     }
 
     /// Absolute path to the SQLite file, or nil if no matching directory exists yet
-    /// (e.g. the user hasn't logged in, so no `appId:userId` folder has been created).
+    /// (e.g. nothing has been written locally yet, so no `<appId>` folder has been created).
     func resolveDatabasePath() -> String? {
         resolve().path
     }
@@ -106,11 +116,17 @@ struct InspectorSQLiteReader {
         for root in roots {
             let subdirs = matchingSubdirs(in: root)
             candidates.append((root, subdirs))
-            if resolvedPath == nil, let best = subdirs.first {
-                let dir = (root as NSString).appendingPathComponent(best.name)
-                let dbPath = (dir as NSString).appendingPathComponent("jsbao_storage.sqlite")
-                if FileManager.default.fileExists(atPath: dbPath) {
-                    resolvedPath = dbPath
+            if resolvedPath == nil {
+                // Newest-first, but keep looking past a directory that has no
+                // database file yet — an empty newer namespace dir must not
+                // hide a real database in an older one.
+                for candidate in subdirs {
+                    let dir = (root as NSString).appendingPathComponent(candidate.name)
+                    let dbPath = (dir as NSString).appendingPathComponent("jsbao_storage.sqlite")
+                    if FileManager.default.fileExists(atPath: dbPath) {
+                        resolvedPath = dbPath
+                        break
+                    }
                 }
             }
         }
@@ -307,6 +323,7 @@ struct InspectorSQLiteReader {
     // MARK: - Private
 
     private func candidateRoots() -> [String]? {
+        if let rootsOverride { return rootsOverride.isEmpty ? nil : rootsOverride }
         // Mirror SQLiteStorageProvider.defaultDirectory — documentDirectory on iOS,
         // applicationSupportDirectory on macOS. We try the likely one first, then the
         // other as a fallback for when tooling blurs the line (e.g. Mac Catalyst builds).
@@ -321,15 +338,31 @@ struct InspectorSQLiteReader {
         return roots.isEmpty ? nil : roots
     }
 
-    /// Matching `appId:*` subdirs sorted newest-first. Matches the "real"
-    /// OfflineStore namespace shape (`appId:userId`), NOT the auth-scoped
-    /// `auth:appId:userId` sibling dirs — those live in the same root but
-    /// hold persisted JWTs, not the kv_store we want.
+    /// Directory names under a `JsBaoClient` root that can hold this app's
+    /// `kv_store`, in either layout:
+    ///
+    /// - `<appId>` — the current layout. Since #853 the client resolves one
+    ///   stable per-appId path (`SQLiteStorageProvider.defaultDatabasePath(appId:)`),
+    ///   so the auth namespace and the user namespace share a single file.
+    /// - `<appId>:<userId>` — the pre-#853 namespace layout, still on disk for
+    ///   installs that predate the change.
+    ///
+    /// The auth-scoped `auth:<appId>:<userId>` siblings are excluded: they live
+    /// in the same root but hold persisted JWTs, not the kv_store we want. A
+    /// name that merely starts with the appId (`<appId>-other`, `<appId>4`)
+    /// belongs to a different app and is excluded too.
+    static func namespaceDirectoryNames(from entries: [String], appId: String) -> [String] {
+        entries.filter { entry in
+            guard !entry.hasPrefix("auth:") else { return false }
+            return entry == appId || entry.hasPrefix("\(appId):")
+        }
+    }
+
+    /// Matching namespace subdirs sorted newest-first.
     private func matchingSubdirs(in root: String) -> [(name: String, mtime: Date)] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(atPath: root) else { return [] }
-        let prefix = "\(appId):"
-        let matches = entries.filter { $0.hasPrefix(prefix) && !$0.hasPrefix("auth:") }
+        let matches = Self.namespaceDirectoryNames(from: entries, appId: appId)
         return matches
             .map { ($0, modDate(at: (root as NSString).appendingPathComponent($0))) }
             .sorted { $0.1 > $1.1 }

@@ -45,6 +45,9 @@ private func compactDict(_ pairs: [String: Any?]) -> [String: Any] {
 }
 
 extension CollectionInfo {
+    // `contextId` is not projected: the client deprecated it in favour of
+    // resource metadata categories (issue #1420), which the inspector reads
+    // under `md.self.<category>.<key>` rather than as a collection field.
     var inspectorDict: [String: Any] {
         compactDict([
             "collectionId": collectionId,
@@ -52,7 +55,6 @@ extension CollectionInfo {
             "name": name,
             "description": description,
             "collectionType": collectionType,
-            "contextId": contextId,
             "documentCount": documentCount,
             "createdAt": createdAt,
             "createdBy": createdBy,
@@ -90,8 +92,12 @@ extension DatabaseInfo {
             "createdAt": createdAt,
             "modifiedAt": modifiedAt,
         ])
+        // `celContext` is not projected: the client deprecated it in favour of
+        // resource metadata categories (issue #1420). `metadata` is the same
+        // server field under its legacy wire name and is not deprecated on
+        // `DatabaseInfo`, so the CEL-context values stay visible in the
+        // inspector under that key.
         if metadata != nil { dict["metadata"] = inspectorAny(metadata) }
-        if celContext != nil { dict["celContext"] = inspectorAny(celContext) }
         return dict
     }
 }
@@ -126,14 +132,17 @@ extension ModelFieldInfo {
 }
 
 extension DocumentPermissionEntry {
+    // `name` is optional on the wire — a user provisioned through the
+    // email-code flow has none (#2980) — so the key is dropped rather than
+    // projected as a null.
     var inspectorDict: [String: Any] {
-        [
+        compactDict([
             "userId": userId,
             "email": email,
             "name": name,
             "permission": permission.rawValue,
             "grantedAt": grantedAt,
-        ]
+        ])
     }
 }
 

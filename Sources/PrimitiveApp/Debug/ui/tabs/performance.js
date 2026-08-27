@@ -71,20 +71,43 @@ function performanceTab() {
         const phase = this.perfPhaseFromEvent(e);
         rows.push({
           ts: e.ts,
+          seq: e.seq,
           docId: e.documentId,
           phase,
           label: this.perfPhaseLabel(phase),
           icon: this.perfPhaseIcon(phase),
           elapsedMs: e.elapsedMs,
           bytes: e.bytes,
+          hopMs: this.perfHopMs(e),
           modelHint: this.perfModelHintForDoc(e.documentId, phase),
         });
       }
       // Newest first — reads naturally from top of screen for a live
       // tail. (The old ascending order was a hangover from the Gantt
       // days where "left-to-right = time".)
-      rows.sort((a, b) => b.ts - a.ts);
+      //
+      // `seq` is the client's emit counter — a total order over one emitter's
+      // emits — so when both rows carry it, it is the sort key. That is what
+      // keeps a burst (say `sync` then `documentSyncStateChanged`) from
+      // reading backwards, whether the two emits landed in the same
+      // millisecond or a system clock adjustment moved `ts` backwards between
+      // them. `ts` is the instant the client emitted, at millisecond
+      // resolution, and only orders rows from before the client sent a `seq`.
+      rows.sort((a, b) => {
+        if (a.seq != null && b.seq != null) return b.seq - a.seq;
+        return (b.ts - a.ts) || ((b.seq || 0) - (a.seq || 0));
+      });
       return rows;
+    },
+
+    /// Milliseconds between the client emitting an event and the inspector's
+    /// handler recording it — the main-actor hop. Normally 0; a number here
+    /// means the main thread was busy, which is worth seeing when the timeline
+    /// looks slower than the client's own `elapsedMs` says it was.
+    perfHopMs(e) {
+      if (!e || e.deliveredTs == null || e.ts == null) return null;
+      const hop = e.deliveredTs - e.ts;
+      return hop >= 0 ? hop : null;
     },
 
     get perfSummary() {

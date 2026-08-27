@@ -205,39 +205,39 @@ public extension InspectableModel {
                 let rows = engine.rawQuery(
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 )
-                return rows.compactMap { $0["name"] as? String }
+                return rows.compactMap { $0["name"]?.stringValue }
             },
             columns: { table in
                 // PRAGMA table_info doesn't accept bind parameters — but the
                 // table name is constrained to ones we just listed via
                 // sqlite_master, so quoting+escaping is enough.
                 //
-                // The engine's `executeQuery` coerces SQLITE_INTEGER columns
-                // to `Int` (not `Int64`), so cast to `Int` here. Casting to
-                // the wrong width silently returns nil and every row reads as
-                // false — which is what bit the rowCount path on first try.
+                // Every row value is a `JSONValue`, and every number is a
+                // `.number(Double)` — read the numeric flags through
+                // `numberValue` rather than an integer cast (#2546).
                 let escaped = table.replacingOccurrences(of: "\"", with: "\"\"")
                 let rows = engine.rawQuery("PRAGMA table_info(\"\(escaped)\")")
                 return rows.map { row in
                     InspectableSQLColumn(
-                        name: (row["name"] as? String) ?? "",
-                        type: (row["type"] as? String) ?? "",
-                        notNull: ((row["notnull"] as? Int) ?? 0) != 0,
-                        isPrimaryKey: ((row["pk"] as? Int) ?? 0) != 0
+                        name: row["name"]?.stringValue ?? "",
+                        type: row["type"]?.stringValue ?? "",
+                        notNull: (row["notnull"]?.numberValue ?? 0) != 0,
+                        isPrimaryKey: (row["pk"]?.numberValue ?? 0) != 0
                     )
                 }
             },
             rows: { table, limit in
                 let escaped = table.replacingOccurrences(of: "\"", with: "\"\"")
                 return engine.rawQuery("SELECT * FROM \"\(escaped)\" LIMIT \(max(0, limit))")
+                    .map { $0.mapValues { $0.toAny() } }
             },
             rowCount: { table in
                 let escaped = table.replacingOccurrences(of: "\"", with: "\"\"")
                 let rows = engine.rawQuery("SELECT COUNT(*) AS c FROM \"\(escaped)\"")
-                return (rows.first?["c"] as? Int) ?? 0
+                return (rows.first?["c"]?.numberValue).map { Int($0) } ?? 0
             },
             executeQuery: { sql in
-                engine.rawQuery(sql)
+                engine.rawQuery(sql).map { $0.mapValues { $0.toAny() } }
             }
         )
         return InspectableModel(
@@ -248,7 +248,7 @@ public extension InspectableModel {
                 try model.query().map { row in
                     var out = row
                     out.removeValue(forKey: "_meta_doc_id")
-                    return out
+                    return out.mapValues { $0.toAny() }
                 }
             },
             deleteById: { id in model.delete(id: id) },

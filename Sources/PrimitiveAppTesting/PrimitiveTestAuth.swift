@@ -146,8 +146,18 @@ public enum PrimitiveTestAuth {
         // signed-in user matches whoever init restored.
         await client.rebindUserScopedStorage()
 
+        // `setShouldConnect(true)`, not `connect()`: the purge above went
+        // through `logout()`, which disconnects, and since #2663 `connect()`
+        // does not override an explicit disconnect. This is the bootstrap
+        // asking to be connected, which is what `setShouldConnect` expresses.
+        await client.setShouldConnect(true)
+        guard client.isConnected else {
+            await client.destroy()
+            throw PrimitiveTestAuthError.connectFailed(
+                underlying: JsBaoError(code: .unavailable, message: "WebSocket did not connect")
+            )
+        }
         do {
-            try await client.connect()
             _ = try await client.waitForAuthReady(timeout: config.authTimeout)
         } catch {
             await client.destroy()

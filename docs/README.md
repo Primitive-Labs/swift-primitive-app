@@ -108,14 +108,15 @@ var body: some View {
 
 States the gate handles internally:
 1. `!isInitialized` → "Initializing..." spinner
-2. Initialized but unauthenticated → [`PrimitiveLoginView`](../Sources/PrimitiveApp/Views/PrimitiveLoginView.swift) (email magic-link + OTP + optional Google OAuth)
+2. Initialized but unauthenticated → [`PrimitiveLoginView`](../Sources/PrimitiveApp/Views/PrimitiveLoginView.swift) (one email sign-in — a 6-digit code by default, plus a sign-in link once you opt in — plus optional Google OAuth)
 3. Authenticated but not connected → "Connecting..." spinner (auto-fires `connectClient()`)
 4. Connected → your content
 5. Was-connected-now-offline → still shows your content (offline-first)
 6. `errorMessage` set → retry view
 
 `PrimitiveAuthManager` is the thing actually doing the auth; `PrimitiveAppState` exposes one as `authManager`. You pass it to login/profile views by hand. Public methods you might call directly:
-- `requestMagicLink(email:)`, `requestOtp(email:)`, `verifyOtp(email:code:)`
+- `requestEmailSignIn(email:)`, `verifyOtp(email:code:)` — one request sends one email. **Code-only by default**, which works with no app settings at all: the request names no redirect target, so the server never consults the `emailRedirectUris` allow-list. Set `sendsEmailSignInLink = true` (and allow-list `<callbackScheme>://auth/magic-link`) to have that same email also carry a link back into the app; either credential then finishes sign-in. A custom-scheme link only opens on a device with the app installed — see [Authentication](https://docs.primitive.dev/getting-started/authentication) for the full checklist
+- `callbackScheme` — the app's own URL scheme, read at init from the `PrimitiveAuth` entry of `CFBundleURLTypes` (`primitive init` stamps an app-unique one), or from an explicit `PrimitiveAuthManager(callbackScheme:)`. It carries the OAuth callback and, when opted in, the emailed sign-in link
 - `startOAuth()` — Google OAuth via `ASWebAuthenticationSession`
 - `handleMagicLinkCallback(url:)` — for the URL scheme handler
 - `logout()`

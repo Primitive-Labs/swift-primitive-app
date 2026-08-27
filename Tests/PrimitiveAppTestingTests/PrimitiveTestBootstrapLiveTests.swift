@@ -7,7 +7,7 @@ import JsBaoClient
 ///
 /// Follows the JS parallel (`tests/client/js-bao-client-node-otp-bootstrap.test.ts`)
 /// verbatim in spirit: provision a public app in the global-admin context with
-/// `otpEnabled` and a whitelisted base, then sign a fresh client in via the
+/// email sign-in enabled and a whitelisted base, then sign a fresh client in via the
 /// `+primitivetest` / `"000000"` bypass and drive a real document through it.
 ///
 /// No mocks (repo rule) — this hits the local dev server on :8787. It skips
@@ -67,7 +67,7 @@ final class PrimitiveTestBootstrapLiveTests: XCTestCase {
         defer { Task { await client.destroy() } }
 
         // Behavior: the bootstrap authenticated a fresh +primitivetest account.
-        XCTAssertNotNil(client.getUserId(), "bootstrap should leave the client authenticated")
+        XCTAssertNotNil(client.userId, "bootstrap should leave the client authenticated")
 
         // Behavior: the runner executes a registered headless test end to end
         // against the real backend and reports it passed.

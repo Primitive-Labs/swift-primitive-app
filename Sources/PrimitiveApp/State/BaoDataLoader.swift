@@ -54,7 +54,11 @@ public enum LoaderTrigger {
     /// reactivity — tighter than `.onSync` + `.onDocumentSyncStateChanged`
     /// (no spurious reloads from unrelated models) and matches the JS pattern
     /// of binding views to model events.
-    case onModel(subscribe: (@escaping () -> Void) -> () -> Void)
+    ///
+    /// The callback is `@Sendable` (#1992), matching the signature codegen
+    /// emits for `Model.subscribe`: it fires on whichever thread committed
+    /// the change, so anything it captures must be safe to touch from there.
+    case onModel(subscribe: (@escaping @Sendable () -> Void) -> @Sendable () -> Void)
 
     /// Caller-supplied subscription installer. Receive the connected client and
     /// a `reload` callback; install whatever event subscription you want and
@@ -70,11 +74,16 @@ public enum LoaderTrigger {
 public protocol ModelSubscribable: AnyObject {
     /// Register a callback that fires after any add, update, or delete on
     /// the model. Returns an unsubscribe closure.
+    ///
+    /// The callback is `@Sendable` (#1992): `DynamicModel` fires it on
+    /// whichever thread committed the change — a local writer's thread, or
+    /// the observer-drain queue.
     @discardableResult
-    func subscribe(_ callback: @escaping () -> Void) -> () -> Void
+    func subscribe(_ callback: @escaping @Sendable () -> Void) -> @Sendable () -> Void
 }
 
-// `DynamicModel.subscribe(...)` already matches the protocol signature exactly.
+// `DynamicModel.subscribe(...)` matches the protocol signature exactly,
+// including the `@Sendable` requirement on both closure types (#1992).
 extension DynamicModel: ModelSubscribable {}
 
 // MARK: - LoaderPhase
@@ -148,7 +157,8 @@ extension Optional: LoaderEmptiness where Wrapped: LoaderEmptiness {
 ///   View as `@State`; trigger reloads from `.onChange(of:)`.
 /// - `subscribeTo` takes a `[LoaderTrigger]` enum array instead of model
 ///   classes (the Swift model facade's per-class pub/sub is `Model.subscribe`; the
-///   equivalent reactivity is on `JsBaoClient.events`).
+///   equivalent reactivity is `JsBaoClient.stream(for:)` /
+///   `observeOnMainActor(_:handler:)`).
 /// - Settable `documentReady` / `isPaused` / `debounceInterval` properties so
 ///   you can flip them mid-flight without rebinding.
 /// - `error` is `@Published` (in addition to the optional `onError` callback).
@@ -565,7 +575,10 @@ public final class BaoDataLoader<Data>: ObservableObject {
     // MARK: - Subscriptions
 
     private func installSubscriptions(client: JsBaoClient, triggers: [LoaderTrigger]) {
-        let reloadAfterInitialLoad: () -> Void = { [weak self] in
+        // `@Sendable` so it can be handed to the model-subscription triggers,
+        // whose callbacks fire off the main thread (#1992). The body only
+        // hops to the main actor, so it captures nothing thread-bound.
+        let reloadAfterInitialLoad: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard self.subscriptionsEnabled else { return }
@@ -577,13 +590,13 @@ public final class BaoDataLoader<Data>: ObservableObject {
         for trigger in triggers {
             switch trigger {
             case .onSync:
-                let sub = client.events.on(.sync) { (_: SyncEvent) in
+                let sub = client.observeOnMainActor(SyncEvent.self) { _ in
                     reloadAfterInitialLoad()
                 }
                 subscriptions.append(sub)
 
             case .onDocumentSyncStateChanged:
-                let sub = client.events.on(.documentSyncStateChanged) { (event: DocumentSyncStateChangedEvent) in
+                let sub = client.observeOnMainActor(DocumentSyncStateChangedEvent.self) { event in
                     if event.state == "synced" {
                         reloadAfterInitialLoad()
                     }
@@ -591,17 +604,17 @@ public final class BaoDataLoader<Data>: ObservableObject {
                 subscriptions.append(sub)
 
             case .onDocumentEvents:
-                let loadedSub = client.events.on(.documentLoaded) { (_: DocumentLoadedEvent) in
+                let loadedSub = client.observeOnMainActor(DocumentLoadedEvent.self) { _ in
                     reloadAfterInitialLoad()
                 }
                 subscriptions.append(loadedSub)
-                let closedSub = client.events.on(.documentClosed) { (_: DocumentClosedEvent) in
+                let closedSub = client.observeOnMainActor(DocumentClosedEvent.self) { _ in
                     reloadAfterInitialLoad()
                 }
                 subscriptions.append(closedSub)
 
             case .onConnect:
-                let sub = client.events.on(.status) { (event: StatusChangedEvent) in
+                let sub = client.observeOnMainActor(StatusChangedEvent.self) { event in
                     if event.status == .connected {
                         reloadAfterInitialLoad()
                     }

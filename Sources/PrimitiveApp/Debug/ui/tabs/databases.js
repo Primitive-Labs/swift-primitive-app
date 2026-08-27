@@ -1,6 +1,6 @@
 // ==== Databases tab ====
 // Two surfaces, side by side:
-//   1. Models (primary) — admin-data path. Generic CRUD on rows,
+//   1. Models (primary) — direct `records/*` path. Generic CRUD on rows,
 //      bypassing CEL. Server-gated to app admins + db owners, so a
 //      401/403 auto-expands the Operations fallback with a nudge.
 //   2. Registered operations (secondary, collapsible) — the
@@ -19,12 +19,12 @@ function databasesTab() {
     newDbError: '',
     newDbSubmitting: false,
 
-    // Models / records (admin-data path)
+    // Models / records (direct `records/*` path)
     dbModels: [], dbModelsError: '', dbModelsLoading: false,
     dbActiveModelName: '',
     dbModelFields: [],                     // from /records/describe, shapes the new-record form
     dbModelRows: [], dbRowsLoading: false,
-    dbRecordError: '',                     // set when admin-data path fails (e.g. 403 for non-admins)
+    dbRecordError: '',                     // set when the records path fails (e.g. 403 for non-admins)
     dbShowNewRowForm: false,
     dbNewRow: {},                          // field → value (typed by kind from describe)
     dbNewRowJson: '',                      // freeform JSON for schemaless models
@@ -106,7 +106,7 @@ function databasesTab() {
       this.operationResult = null;
       this.operationError = '';
       // Both surfaces load in parallel. Operations stay collapsed unless
-      // the admin-data path fails (loadDbModelRows 403 handler flips it).
+      // the records path fails (loadDbModelRows 403 handler flips it).
       this.loadDbModels();
       this.loadDbOperations();
     },
@@ -165,7 +165,7 @@ function databasesTab() {
       }
     },
 
-    // ---- models / records (admin-data path) ----
+    // ---- models / records (direct `records/*` path) ----
     async loadDbModels() {
       if (!this.selectedDatabaseId) return;
       this.dbModelsLoading = true;
@@ -229,7 +229,7 @@ function databasesTab() {
       if (isPermError) {
         this.showDbOperations = true;
         this.dbRecordError =
-          'This database\'s raw records can only be browsed by the app\'s admin + database owner — that\'s the server-side gate on admin-data routes.\n\n'
+          'This database\'s raw records can only be browsed by an app admin/owner or a database manager — that\'s the server-side gate on the direct records routes.\n\n'
           + 'Use the Registered operations section below to run a CEL-gated operation instead.\n\n'
           + (res.error ? 'Server said: ' + res.error : '');
       } else {

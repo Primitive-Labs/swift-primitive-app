@@ -3,7 +3,13 @@ import os
 
 private let logger = Logger(subsystem: "com.primitivelabs.PrimitiveApp", category: "Config")
 
-/// App configuration loaded from `primitive.json` (tracked in git).
+/// App configuration loaded from `primitive.json`.
+///
+/// `primitive.json` is a BUILD PRODUCT, not a tracked file: the app ID and
+/// server URL are typed once in `.primitive/config.json`, and
+/// `scripts/resolve-primitive-config.sh` writes the selected Primitive
+/// environment's values into this shape before every build. Never hand-edit
+/// it — change the environment instead (`primitive env use <name>`).
 public struct PrimitiveAppConfig {
     public let appId: String
     public let appName: String
@@ -71,7 +77,12 @@ public enum PrimitiveConfigError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .noAppConfig:
-            return "No primitive.json found. Create one with your appId and serverUrl."
+            return """
+                No primitive.json found. It is generated from the Primitive \
+                environment selected in .primitive/config.json — run \
+                `bash scripts/resolve-primitive-config.sh` (run.sh, run-ios.sh, \
+                archive.sh and the Xcode pre-build phase all do this for you).
+                """
         }
     }
 }
@@ -79,8 +90,8 @@ public enum PrimitiveConfigError: Error, CustomStringConvertible {
 // MARK: - Local dev env file
 
 /// Loads a local `.env.local` file (or any of the caller-supplied search
-/// paths) into a `[key: value]` dict. Used for dev-only flags like
-/// `USE_CLI_AUTH=true` that should never be committed to git.
+/// paths) into a `[key: value]` dict. Used for dev-only toggles that
+/// should never be committed to git.
 ///
 /// Format: standard `KEY=VALUE` lines, one per line. Lines starting with
 /// `#` are comments. Surrounding single/double quotes on values are
@@ -127,93 +138,4 @@ public func loadPrimitiveDevEnv(searchPaths: [URL] = []) -> [String: String] {
 public func devEnvFlag(_ env: [String: String], _ key: String) -> Bool {
     guard let raw = env[key]?.lowercased() else { return false }
     return raw == "true" || raw == "1" || raw == "yes" || raw == "on"
-}
-
-// MARK: - CLI auth bypass (dev mode)
-
-/// Subset of `~/.primitive/credentials.json` (written by the Primitive CLI's
-/// `primitive login`). Loaded by `loadPrimitiveCliCredentials()` and used by
-/// `PrimitiveAppState` to bypass the email login UI when the dev-mode
-/// `USE_CLI_AUTH` flag is set in `.env.local`.
-public struct PrimitiveCliCredentials {
-    public let accessToken: String
-    public let email: String?
-    public let name: String?
-}
-
-/// Load CLI credentials from one of two sources, in order of preference:
-///
-/// 1. **Bundled `dev-credentials.json`** in the app's main bundle. This is
-///    how iOS device builds (and any sandboxed Xcode build) get a token —
-///    `run-ios.sh` reads `~/.primitive/credentials.json` from your Mac,
-///    copies it into `dev-credentials.json` at the project root before
-///    building, and the file gets bundled as a resource. The presence of
-///    a non-empty bundled file is itself the opt-in signal — gated at
-///    *build* time by `USE_CLI_AUTH` in `.env.local`, not at runtime.
-///
-/// 2. **`~/.primitive/credentials.json`** directly. Only attempted on
-///    macOS, only when `USE_CLI_AUTH` is true in the local `.env.local`.
-///    This is the path for `./run.sh` (SwiftPM, unsandboxed), where the
-///    binary can just read your home dir without any build step.
-///
-/// Returns `nil` if neither source produces a usable token.
-public func loadPrimitiveCliCredentials(searchPaths: [URL] = []) -> PrimitiveCliCredentials? {
-    // 1. Bundled file (iOS device, Xcode Mac build).
-    if let bundledUrl = Bundle.main.url(forResource: "dev-credentials", withExtension: "json"),
-       let creds = readCliCredentialsFile(at: bundledUrl) {
-        logger.info("CLI credentials loaded from bundle")
-        return creds
-    }
-
-    // 2. ~/.primitive/credentials.json (macOS only, gated by .env.local).
-    #if os(macOS)
-    let env = loadPrimitiveDevEnv(searchPaths: searchPaths)
-    if devEnvFlag(env, "USE_CLI_AUTH") {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let path = home.appendingPathComponent(".primitive/credentials.json")
-        if let creds = readCliCredentialsFile(at: path) {
-            logger.info("CLI credentials loaded from ~/.primitive/credentials.json")
-            return creds
-        }
-        logger.warning("USE_CLI_AUTH set but ~/.primitive/credentials.json is missing or unreadable — run `primitive login` first")
-    }
-    #endif
-
-    return nil
-}
-
-/// Internal helper. Parses a credentials JSON file (the same shape that
-/// `primitive login` writes) and pulls out the access token plus the
-/// display fields. Returns nil if the file is missing, malformed, or
-/// doesn't contain a non-empty `accessToken` (e.g. the empty `{}`
-/// placeholder that ships in the project before the build script runs).
-///
-/// We deliberately distinguish three failure shapes in the logs so a
-/// misconfigured dev environment doesn't look identical to "no creds":
-///
-/// - file missing → silent (this is the normal pre-build state)
-/// - file present but unreadable / not JSON → `warning`
-/// - file present and parsed but missing/empty `accessToken` → `debug`
-///   (the `{}` placeholder is normal before `run-ios.sh` populates it)
-private func readCliCredentialsFile(at url: URL) -> PrimitiveCliCredentials? {
-    let fm = FileManager.default
-    guard fm.fileExists(atPath: url.path) else { return nil }
-
-    guard let data = try? Data(contentsOf: url) else {
-        logger.warning("Credentials file at \(url.path) exists but is unreadable")
-        return nil
-    }
-    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        logger.warning("Credentials file at \(url.path) is not valid JSON")
-        return nil
-    }
-    guard let token = json["accessToken"] as? String, !token.isEmpty else {
-        logger.debug("Credentials file at \(url.path) has no accessToken (placeholder?)")
-        return nil
-    }
-    return PrimitiveCliCredentials(
-        accessToken: token,
-        email: json["email"] as? String,
-        name: json["name"] as? String
-    )
 }
