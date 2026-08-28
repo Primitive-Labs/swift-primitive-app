@@ -15,10 +15,30 @@ public struct PrimitiveAppConfig {
     public let appName: String
     public let serverUrl: String
 
-    public init(appId: String, appName: String, serverUrl: String = "https://primitiveapi.com") {
+    /// This app's web counterpart — the origin its Vue client is served from
+    /// (`https://notes.example.com`, or `http://localhost:5173` in dev), or
+    /// nil for an app with no web client (#2982).
+    ///
+    /// ONE value with two jobs: the emailed sign-in link points at this
+    /// origin's callback path (an https link iOS opens straight into this app
+    /// when it is installed, and an ordinary web sign-in everywhere else), and
+    /// the same origin is what `client.links` trusts an incoming universal
+    /// link from. It is per-ENVIRONMENT, because the callback has to be served
+    /// by a deployment of the same app on the same backend: a dev build
+    /// carrying the production callback would hand out a magic token the
+    /// production server never minted.
+    public let webUrl: String?
+
+    public init(
+        appId: String,
+        appName: String,
+        serverUrl: String = "https://primitiveapi.com",
+        webUrl: String? = nil
+    ) {
         self.appId = appId
         self.appName = appName
         self.serverUrl = serverUrl
+        self.webUrl = webUrl
     }
 
     /// The WebSocket URL derived from the server URL.
@@ -66,8 +86,19 @@ public func loadPrimitiveAppConfig(
 
     let appName = json["appName"] as? String ?? appId
     let serverUrl = json["serverUrl"] as? String ?? "https://primitiveapi.com"
+    // Typed, like every other read here: a non-string value is absent rather
+    // than something the app tries to make a URL out of. The key is written
+    // only when the selected environment has one, so most apps have none.
+    let webUrl = json["webUrl"] as? String
 
-    return .success(PrimitiveAppConfig(appId: appId, appName: appName, serverUrl: serverUrl))
+    return .success(
+        PrimitiveAppConfig(
+            appId: appId,
+            appName: appName,
+            serverUrl: serverUrl,
+            webUrl: webUrl
+        )
+    )
 }
 
 /// Errors that can occur when loading app config.
