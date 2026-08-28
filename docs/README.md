@@ -108,14 +108,16 @@ var body: some View {
 
 States the gate handles internally:
 1. `!isInitialized` → "Initializing..." spinner
-2. Initialized but unauthenticated → [`PrimitiveLoginView`](../Sources/PrimitiveApp/Views/PrimitiveLoginView.swift) (one email sign-in — a 6-digit code by default, plus a sign-in link once you opt in — plus optional Google OAuth)
+2. Initialized but unauthenticated → [`PrimitiveLoginView`](../Sources/PrimitiveApp/Views/PrimitiveLoginView.swift) (one email sign-in — a 6-digit code by default, plus a sign-in link once the app has a link target — plus optional Google OAuth)
 3. Authenticated but not connected → "Connecting..." spinner (auto-fires `connectClient()`)
 4. Connected → your content
 5. Was-connected-now-offline → still shows your content (offline-first)
 6. `errorMessage` set → retry view
 
 `PrimitiveAuthManager` is the thing actually doing the auth; `PrimitiveAppState` exposes one as `authManager`. You pass it to login/profile views by hand. Public methods you might call directly:
-- `requestEmailSignIn(email:)`, `verifyOtp(email:code:)` — one request sends one email. **Code-only by default**, which works with no app settings at all: the request names no redirect target, so the server never consults the `emailRedirectUris` allow-list. Set `sendsEmailSignInLink = true` (and allow-list `<callbackScheme>://auth/magic-link`) to have that same email also carry a link back into the app; either credential then finishes sign-in. A custom-scheme link only opens on a device with the app installed — see [Authentication](https://docs.primitive.dev/getting-started/authentication) for the full checklist
+- `requestEmailSignIn(email:)`, `verifyOtp(email:code:)` — one request sends one email. **Code-only by default**, which works with no app settings at all: the request names no redirect target, so the server never consults the `emailRedirectUris` allow-list. Two things turn the emailed LINK on. If the app has a web client, give the Primitive environment a `webUrl` and the link becomes `https://<webUrl>/oauth/callback` — a universal link that opens this app where it is installed and signs in through the browser everywhere else, with no code change (`initialize()` also makes that origin the one incoming links are trusted from). Otherwise set `sendsEmailSignInLink = true` and allow-list `<callbackScheme>://auth/magic-link`, remembering that a custom-scheme link only opens on a device with the app installed. Either credential finishes sign-in; see [Authentication](https://docs.primitive.dev/getting-started/authentication) for the full checklist
+- `sendsEmailSignInLink` — defaults to true when the app named an explicit `callbackScheme:` or has a `webUrl` counterpart; set it explicitly to force either answer
+- `emailSignInWebCallbackPath` — the path appended to the web origin, `/oauth/callback` by default (move the `apple-app-site-association` component with it if you change it)
 - `callbackScheme` — the app's own URL scheme, read at init from the `PrimitiveAuth` entry of `CFBundleURLTypes` (`primitive init` stamps an app-unique one), or from an explicit `PrimitiveAuthManager(callbackScheme:)`. It carries the OAuth callback and, when opted in, the emailed sign-in link
 - `startOAuth()` — Google OAuth via `ASWebAuthenticationSession`
 - `handleMagicLinkCallback(url:)` — for the URL scheme handler

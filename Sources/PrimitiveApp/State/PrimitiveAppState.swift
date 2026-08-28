@@ -111,6 +111,13 @@ open class PrimitiveAppState: ObservableObject {
         ))
         self.client = client
 
+        // The app's web counterpart, from the SELECTED environment (#2982).
+        // One value, both directions: `links` trusts incoming universal links
+        // from this origin (without it a tapped https link parses as
+        // `.unknown` — the app opens and nobody signs in), and the auth
+        // manager points the emailed sign-in link at this origin's callback.
+        client.links.appBaseURL = Self.linksBaseURL(webUrl: config.webUrl)
+
         // Wire the process-wide default the codegen'd model facade reads
         // (`TaskRecord.query()`, `record.save(in:)`, `TaskRecord.subscribe`).
         // Must happen before any generated `Model.*` call, so we do it as
@@ -125,6 +132,52 @@ open class PrimitiveAppState: ObservableObject {
         #endif
 
         isInitialized = true
+    }
+
+    /// The app's web origin as a URL, or nil when the environment names none.
+    ///
+    /// Pure and static so the parsing is tested rather than reviewed. Anything
+    /// that is not a web ORIGIN resolves to nil, which is exactly "this app has
+    /// no web counterpart": no trusted web origin, and a code-only sign-in
+    /// email by default. That is stricter than "parses as a URL", because both
+    /// jobs this value does need an origin —
+    ///
+    /// - https, except on loopback where a dev server has no certificate: the
+    ///   server refuses to allow-list a non-loopback http redirect URI, and a
+    ///   plain-http link would carry the magic token in clear;
+    /// - no path, query or fragment: the web app serves its callback at
+    ///   `<origin>/oauth/callback`, which is also the exact path the
+    ///   `apple-app-site-association` component claims — a base path would
+    ///   produce a URL neither of them uses;
+    /// - no embedded credentials, which have no business in an emailed link.
+    ///
+    /// `primitive env add --web-url` and the CLI's project-config validation
+    /// reject those shapes with a message, and the resolver that writes
+    /// `primitive.json` drops them, but neither runs when someone hands the app
+    /// a `primitive.json` of their own — so the app applies the same contract
+    /// as its floor rather than trusting the file.
+    public nonisolated static func linksBaseURL(webUrl: String?) -> URL? {
+        guard let trimmed = webUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              let host = components.host?.lowercased(),
+              !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.path.isEmpty || components.path == "/",
+              components.query == nil,
+              components.fragment == nil else { return nil }
+        if scheme == "http" && host != "localhost" && host != "127.0.0.1" { return nil }
+        // Rebuilt as the bare origin, so a trailing slash and a spelled-out
+        // default port cannot produce two URLs that mean the same thing.
+        var origin = "\(scheme)://\(host)"
+        if let port = components.port,
+           port != (scheme == "https" ? 443 : 80) {
+            origin += ":\(port)"
+        }
+        return URL(string: origin)
     }
 
     /// Connect the client (called after auth succeeds).

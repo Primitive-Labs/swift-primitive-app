@@ -61,8 +61,9 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         public var passkey: Bool
         /// Email sign-in as ONE method (#2884) — one request, one email, so
         /// there is nothing to enable separately. That email carries a
-        /// 6-digit code, and a sign-in link too once the app opts in with
-        /// `sendsEmailSignInLink` (#2969); by default it is code-only.
+        /// 6-digit code, and a sign-in link too once the app has a link target
+        /// to name: the environment's `webUrl` https callback (#2982) or an
+        /// explicit scheme opt-in (#2969). With neither it is code-only.
         public var email: Bool
 
         /// Conservative fallback when the config fetch fails: email only.
@@ -100,7 +101,17 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// login button nor the nudge ever appears.
     public var automaticPasskeyEnrollmentPrompt = true
 
-    // MARK: - Callback scheme and link sign-in (#2969)
+    // MARK: - Callback scheme and link sign-in (#2969, #2982)
+    //
+    // Two link transports, one decision. A custom scheme (the target
+    // ``emailSignInRedirectUri(sendsLink:scheme:webCallback:)`` builds from
+    // ``callbackScheme``, and the only place that literal lives) reaches only
+    // a device with this app installed; the app's web callback
+    // (``emailSignInWebCallbackPath`` on the configured web origin) is
+    // a universal link on such a device and a working web sign-in everywhere
+    // else, so it wins whenever the app has a web counterpart. Both are
+    // ordinary explicit targets to the server: whichever one goes out has to
+    // be in the app's `emailRedirectUris`.
 
     /// The `CFBundleURLName` of the app's own URL type, which is where this
     /// manager reads its callback scheme from. `primitive init` stamps an
@@ -119,30 +130,107 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// `PrimitiveAuth` scheme, else `primitiveapp`.
     public let callbackScheme: String
 
+    /// The path on the app's web counterpart that finishes a sign-in — the
+    /// route the Vue template serves at `DEFAULT_OAUTH_CALLBACK_PATH` (#2982).
+    ///
+    /// Change it only together with the web client's callback route AND the
+    /// `applinks` component in the domain's `apple-app-site-association`: the
+    /// three name one URL, and a link iOS does not claim is a web page, while
+    /// a page the web app does not serve is a dead end.
+    public static let defaultEmailSignInWebCallbackPath = "/oauth/callback"
+
+    /// The path appended to the app's web origin to build the emailed sign-in
+    /// link's https target. Defaults to ``defaultEmailSignInWebCallbackPath``.
+    public var emailSignInWebCallbackPath = defaultEmailSignInWebCallbackPath
+
     /// Whether a sign-in email should also carry a LINK back into this app.
     ///
-    /// **Off by default, and that default works with no server configuration:**
-    /// the request names no redirect target, so the server issues a code-only
-    /// email without consulting the app's `emailRedirectUris` allow-list. A
-    /// supplied target that misses a non-empty allow-list is refused outright
-    /// (400 `Invalid redirect URI`) — it does not fall back to a code — so
-    /// turning this on takes one server-side step:
+    /// **The default follows the app's configuration, and needs no code:**
     ///
-    /// 1. Merge this manager's magic-link callback — the URI
-    ///    ``emailSignInRedirectUri(sendsLink:scheme:)`` builds from
-    ///    ``callbackScheme`` — into the existing `[auth].emailRedirectUris` in
-    ///    `config/app.toml`, then run `primitive config push --only app`.
-    /// 2. Set this to `true` before requesting a sign-in email.
+    /// - Neither a web counterpart nor an explicit scheme → `false`. The
+    ///   request names no redirect target, so the server issues a code-only
+    ///   email without consulting the app's `emailRedirectUris` allow-list.
+    ///   This is the out-of-the-box shape and it needs no server setup at all.
+    /// - A web counterpart configured (the environment's `webUrl` reaching
+    ///   `client.links.appBaseURL`) → `true`, and the link is that origin's
+    ///   https callback: iOS opens it straight into this app when the app is
+    ///   installed, and it is an ordinary web sign-in anywhere else (#2982).
+    /// - An explicit `callbackScheme:` and no web counterpart → `true`, with
+    ///   the custom-scheme target (#2969's deliberately wired iOS-only app).
     ///
-    /// A manager constructed with an explicit `callbackScheme:` starts `true`
-    /// — an app that named its own scheme allow-listed it deliberately, and
-    /// keeps its link emails. Set it to `false` to force code-only anyway.
+    /// Setting this wins over the default in both directions: `false` forces a
+    /// code-only email even with a web counterpart configured, `true` sends a
+    /// link via the best target available.
     ///
-    /// Worth knowing before you turn it on: a custom-scheme link only opens on
-    /// a device that has the app installed (dead in the Simulator, dead
-    /// cross-device, and many webmail clients will not render a non-http(s)
-    /// href at all). The 6-digit code is the credential that always works.
-    public var sendsEmailSignInLink: Bool
+    /// A supplied target that misses a non-empty allow-list is refused
+    /// outright (400 `Invalid redirect URI`) — it does not fall back to a code
+    /// — so whichever target goes out has to be in the app's
+    /// `[auth].emailRedirectUris`: merge it into the existing array in
+    /// `config/app.toml` and run `primitive config push --only app`.
+    ///
+    /// Worth knowing: a custom-scheme link only opens on a device that has the
+    /// app installed (dead in the Simulator, dead cross-device, and many
+    /// webmail clients will not render a non-http(s) href at all) — which is
+    /// what the https callback fixes. The 6-digit code is the credential that
+    /// works regardless of the link's shape.
+    public var sendsEmailSignInLink: Bool {
+        get {
+            Self.resolvedSendsLink(
+                override: sendsEmailSignInLinkOverride,
+                schemeWasExplicit: schemeWasExplicit,
+                webCallbackConfigured: webEmailSignInCallback() != nil
+            )
+        }
+        set { sendsEmailSignInLinkOverride = newValue }
+    }
+
+    /// The app's set value, or nil while the default decides. Nil-backed so
+    /// that a web counterpart configured AFTER this manager was constructed
+    /// (which is the normal order — `attach(to:)` comes later) still flips the
+    /// default on, while an explicit set keeps winning.
+    private var sendsEmailSignInLinkOverride: Bool?
+
+    /// Whether the app named its own scheme, rather than one being resolved
+    /// from the bundle or the shared fallback.
+    private let schemeWasExplicit: Bool
+
+    /// Whether a sign-in email carries a link, given what the app configured.
+    ///
+    /// Pure and static so the polarity is tested rather than reviewed: this is
+    /// the switch between "works with no server configuration" and "every
+    /// email request 400s because the target is not allow-listed".
+    public static func resolvedSendsLink(
+        override: Bool?,
+        schemeWasExplicit: Bool,
+        webCallbackConfigured: Bool
+    ) -> Bool {
+        override ?? (schemeWasExplicit || webCallbackConfigured)
+    }
+
+    /// The https sign-in callback on the app's web counterpart, or nil when
+    /// no web origin is configured.
+    ///
+    /// Pure and static: one place joins the origin and the path, so a base
+    /// with a trailing slash cannot produce `//oauth/callback` — a URL that is
+    /// neither allow-listed nor claimed by the `applinks` component.
+    public static func webEmailSignInCallback(appBaseURL: URL?, path: String) -> URL? {
+        guard let appBaseURL else { return nil }
+        let base = appBaseURL.absoluteString.hasSuffix("/")
+            ? String(appBaseURL.absoluteString.dropLast())
+            : appBaseURL.absoluteString
+        let suffix = path.hasPrefix("/") ? path : "/\(path)"
+        return URL(string: base + suffix)
+    }
+
+    /// This manager's web callback, from the attached client's configured
+    /// ``LinksAPI/appBaseURL`` — the same value that decides which origins an
+    /// incoming universal link is trusted from.
+    private func webEmailSignInCallback() -> URL? {
+        Self.webEmailSignInCallback(
+            appBaseURL: client?.links.appBaseURL,
+            path: emailSignInWebCallbackPath
+        )
+    }
 
     /// The app's registered callback scheme, from a `CFBundleURLTypes` array.
     ///
@@ -166,11 +254,24 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// The redirect target a sign-in email request carries, if any.
     ///
     /// The ONE place that decides the request's shape: `nil` is a code-only
-    /// email (no allow-list involved), and the scheme's callback is the link.
-    /// Pure and static so the decision is tested rather than reviewed —
-    /// sending a target unconditionally is exactly the bug this fixes.
-    public static func emailSignInRedirectUri(sendsLink: Bool, scheme: String) -> String? {
-        sendsLink ? "\(scheme)://auth/magic-link" : nil
+    /// email (no allow-list involved); the app's web callback is the link when
+    /// there is one, because an https URL opens the installed app AND signs in
+    /// from any browser; the scheme's callback is the fallback for an app with
+    /// no web counterpart. Pure and static so the decision is tested rather
+    /// than reviewed — sending a target unconditionally is exactly the bug
+    /// #2969 fixed, and sending the scheme when an https target exists is the
+    /// 400 #2982 removes.
+    ///
+    /// `webCallback` defaults to nil so that call sites written against the
+    /// two-argument shape compile unchanged, with identical behavior.
+    public static func emailSignInRedirectUri(
+        sendsLink: Bool,
+        scheme: String,
+        webCallback: URL? = nil
+    ) -> String? {
+        guard sendsLink else { return nil }
+        if let webCallback { return webCallback.absoluteString }
+        return "\(scheme)://auth/magic-link"
     }
 
     // MARK: - Private
@@ -184,7 +285,8 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     ///   scheme registered under the ``urlTypeName`` URL type is used (falling
     ///   back to `primitiveapp`); pass one and this manager also starts out
     ///   sending link sign-in emails, the way a deliberately wired app did
-    ///   before #2969.
+    ///   before #2969. An app with a web counterpart sends link emails either
+    ///   way, via the https callback (#2982).
     public init(callbackScheme: String? = nil) {
         self.callbackScheme =
             callbackScheme
@@ -192,7 +294,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
                 urlTypes: Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes")
                     as? [[String: Any]]
             )
-        self.sendsEmailSignInLink = callbackScheme != nil
+        self.schemeWasExplicit = callbackScheme != nil
         super.init()
     }
 
@@ -546,18 +648,31 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// Request ONE sign-in email carrying a 6-digit code — and, when
     /// ``sendsEmailSignInLink`` is on, a link that opens straight back here.
     ///
-    /// By default no redirect target is sent at all, so the email is code-only
-    /// and needs no app settings. See ``sendsEmailSignInLink`` for the opt-in
-    /// and what it requires of the app's allow-list.
+    /// With no web counterpart and no scheme opt-in, no redirect target is sent
+    /// at all, so the email is code-only and needs no app settings. Configure
+    /// the environment's `webUrl` and the link becomes that origin's https
+    /// callback — one URL that opens this app when it is installed and signs
+    /// in through the browser when it is not (#2982). See
+    /// ``sendsEmailSignInLink`` for the full polarity and what each target
+    /// requires of the app's allow-list.
     public func requestEmailSignIn(email: String) async {
         guard let client else { return }
 
         loginState = .sendingEmail
         authError = nil
 
+        // The client's own `links.appBaseURL` is the single configured origin:
+        // the link points back at it, and an incoming universal link is
+        // trusted from it. Deriving the target from anything else is how the
+        // two drift.
+        let webCallback = Self.webEmailSignInCallback(
+            appBaseURL: client.links.appBaseURL,
+            path: emailSignInWebCallbackPath
+        )
         let redirectUri = Self.emailSignInRedirectUri(
             sendsLink: sendsEmailSignInLink,
-            scheme: callbackScheme
+            scheme: callbackScheme,
+            webCallback: webCallback
         )
 
         do {
