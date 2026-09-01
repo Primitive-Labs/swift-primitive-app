@@ -25,6 +25,37 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     @Published public var authError: String?
     @Published public var isAuthenticating = false
 
+    /// The last failed sign-in, with its TYPE intact (#3085).
+    ///
+    /// `authError` is a rendered sentence; this is what the failure *was*, so
+    /// an app can branch on `authFailure?.code == .addedToWaitlist` (or
+    /// `.invitationRequired` / `.domainNotAllowed`) instead of matching on
+    /// message text. Cleared everywhere `authError` is — at the start of each
+    /// flow, on success, on ``reset()`` and on ``logout()`` — so it never
+    /// describes a failure the user has already moved past.
+    @Published public private(set) var authFailure: AuthFailure?
+
+    /// A failed sign-in, as the manager received it.
+    ///
+    /// Not `Sendable` (an `Error` existential isn't), which is no restriction
+    /// here: `PrimitiveAuthManager` is `@MainActor`, so every reader is
+    /// already on the main actor.
+    public struct AuthFailure {
+        /// The error the client threw, unchanged — an `HttpError` for a server
+        /// rejection, `JsBaoNetworkError` for an outage, `AppleSignInError` /
+        /// `PasskeyError` for a provider flow. `nil` when the failure arrived
+        /// as an `AuthFailedEvent` (a session the client could not keep),
+        /// which carries a message only.
+        public let error: Error?
+        /// The server's `code` field, typed, when the failure carried one.
+        /// `nil` for a transport failure, a cancelled sheet, or a code this
+        /// SDK version does not know — read `error` for those.
+        public let code: AuthCode?
+        /// The text published on ``authError`` for this failure. Held here too
+        /// so one value describes the failure completely.
+        public let message: String
+    }
+
     /// True while the client is attempting to restore a persisted
     /// session on cold start (loading the stored JWT; if it's aged
     /// out, trying a cookie-based refresh). Flips back to false once
@@ -47,6 +78,15 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         case emailSent(email: String)
         case verifyingOtp
         case authenticating
+        /// The app is invite-only and this address was added to its waitlist
+        /// (`ADDED_TO_WAITLIST`) — an outcome, not an error: there is nothing
+        /// to retype and nothing to retry (#3085). `email` is the address that
+        /// was queued, or nil when the flow that hit the waitlist never named
+        /// one (an OAuth or passkey sign-in).
+        ///
+        /// Matches the Vue template's `waitlisted` login state, so the same
+        /// app tells a waitlisted user one story on web and on iOS.
+        case waitlisted(email: String?)
         case error(String)
     }
 
@@ -274,7 +314,121 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         return "\(scheme)://auth/magic-link"
     }
 
+    // MARK: - Reading a failure (#3085)
+
+    /// The `AuthCode` an error carries, if any.
+    ///
+    /// Pure and static so the mapping is tested rather than reviewed, and so
+    /// an app can classify an error it caught from `client.auth` directly with
+    /// the same rule the manager uses. The client reports a rejected sign-in
+    /// two ways — a transport-level `HttpError` whose JSON body carried
+    /// `{"code": …}`, and an `AuthError` — and both are read here; anything
+    /// else (an outage, a cancelled system sheet, a code newer than this SDK)
+    /// has no code, and the caller falls back to the message.
+    public static func authCode(of error: Error) -> AuthCode? {
+        if let authError = error as? AuthError { return authError.code }
+        if let http = error as? HttpError { return http.authCode }
+        return nil
+    }
+
+    /// The server's own explanation of a failure, when it sent one.
+    ///
+    /// This is the text that says "you've been added to the waitlist" — the
+    /// message the Vue template shows verbatim, and the one worth showing here
+    /// instead of a client-side sentence that describes the wrong thing.
+    /// `nil` when the failure never reached the server (an outage), or when it
+    /// answered with no structured body.
+    public static func serverMessage(of error: Error) -> String? {
+        if let http = error as? HttpError,
+           let message = http.serverMessage, !message.isEmpty {
+            return message
+        }
+        if let authError = error as? AuthError, !authError.message.isEmpty {
+            return authError.message
+        }
+        return nil
+    }
+
+    /// Where a failed sign-in leaves the login UI: the waitlist screen when
+    /// the server says the address was queued, else the caller's own failure
+    /// state (#3085).
+    ///
+    /// Pure and static so the one state that is NOT an error is decided in one
+    /// place, for every flow that can hit it — the server gates a waitlisted
+    /// address on the email request, on the code verify, and on an OAuth or
+    /// Apple callback alike.
+    public static func failureState(
+        for error: Error,
+        email: String?,
+        otherwise: LoginState
+    ) -> LoginState {
+        authCode(of: error) == .addedToWaitlist ? .waitlisted(email: email) : otherwise
+    }
+
+    /// What the user is told when the code they submitted was rejected.
+    public static let invalidOtpMessage = "Invalid code. Please try again."
+
+    /// What a failed ``verifyOtp(email:code:)`` should say (#3085).
+    ///
+    /// "Invalid code" belongs to ONE failure — the server rejecting the
+    /// submitted code — and it used to be the answer for all of them, so a
+    /// waitlisted user with a perfectly good code was told the code was wrong.
+    ///
+    /// A rejected code is the one rejection the server describes with no
+    /// machine-readable `code` at all: `/auth/otp/verify` answers a bare
+    /// 400/401 ("Invalid or expired code") on purpose, because the endpoint is
+    /// a brute-force target and an attacker should learn nothing from it.
+    /// Every other failure — waitlist, invite-only, domain, rate limit, an
+    /// outage, a 5xx — either carries a `code` or is not an HTTP rejection at
+    /// all, and says what it is.
+    ///
+    /// The test is the raw `code` field, not the typed ``AuthCode``: a coded
+    /// rejection this SDK version has no case for (`OTP_MAX_ATTEMPTS`, say,
+    /// which the server answers 401 with) still said what it is, and telling
+    /// that user to retype a code the server will no longer accept is the very
+    /// bug this rule exists to fix.
+    public static func otpVerifyMessage(for error: Error) -> String {
+        if let http = error as? HttpError,
+           http.serverCode == nil,
+           http.status == 400 || http.status == 401 {
+            return invalidOtpMessage
+        }
+        return serverMessage(of: error) ?? error.localizedDescription
+    }
+
     // MARK: - Private
+
+    /// The ONE place a failed flow updates the manager's failure surface, so
+    /// `authError` and ``authFailure`` cannot describe different things.
+    ///
+    /// Pass `state: nil` for a failure that leaves the login UI where it is
+    /// (a passkey management call, say).
+    private func publishFailure(_ error: Error, message: String, state: LoginState?) {
+        authFailure = AuthFailure(
+            error: error,
+            code: Self.authCode(of: error),
+            message: message
+        )
+        authError = message
+        if let state { loginState = state }
+    }
+
+    /// A failure with no error object behind it: the client was never
+    /// attached, a callback URL was malformed, or the client reported a lost
+    /// session through `AuthFailedEvent`. Keeps the two halves of the surface
+    /// in step — a message with a `nil` ``AuthFailure/code``, never a stale
+    /// code from an earlier failure.
+    private func publishFailure(message: String, state: LoginState? = nil) {
+        authFailure = AuthFailure(error: nil, code: nil, message: message)
+        authError = message
+        if let state { loginState = state }
+    }
+
+    /// Clear the failure surface — both halves of it, always together.
+    private func clearFailure() {
+        authError = nil
+        authFailure = nil
+    }
 
     private weak var client: JsBaoClient?
     private var authSuccessSubscription: EventSubscription?
@@ -376,7 +530,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             self.isAuthenticating = false
             self.isAuthRestoring = false
             self.loginState = .initial
-            self.authError = nil
+            self.clearFailure()
             self.handlePostSignIn(cause: event.cause)
         }
 
@@ -384,10 +538,12 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             guard let self else { return }
             let msg = event.message ?? "Authentication failed"
             logger.error("Auth failed: \(msg)")
-            self.authError = msg
+            // No thrown error to keep here — the event carries a message only
+            // — but the surface stays whole, so an app never reads a stale
+            // `authFailure` next to a fresh `authError`.
+            self.publishFailure(message: msg, state: .error(msg))
             self.isAuthenticating = false
             self.isAuthRestoring = false
-            self.loginState = .error(msg)
             self.clearSessionScopedPasskeyState()
         }
     }
@@ -400,13 +556,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// the authorization code for a token via the JsBaoClient.
     public func startOAuth() async {
         guard let client else {
-            authError = "Client not initialized"
+            publishFailure(message: "Client not initialized")
             return
         }
 
         isAuthenticating = true
         loginState = .authenticating
-        authError = nil
+        clearFailure()
 
         let redirectUri = "\(callbackScheme)://oauth/callback"
 
@@ -432,9 +588,14 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             loginState = .initial
         } catch {
             logger.error("OAuth error: \(error.localizedDescription)")
-            authError = "OAuth failed: \(error.localizedDescription)"
+            let message = Self.serverMessage(of: error)
+                ?? "OAuth failed: \(error.localizedDescription)"
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(for: error, email: nil, otherwise: .error(message))
+            )
             isAuthenticating = false
-            loginState = .error(error.localizedDescription)
         }
     }
 
@@ -445,13 +606,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// explicitly to test without bundling the plist.
     public func signInWithGoogle(redirectUri: String? = nil) async {
         guard let client else {
-            authError = "Client not initialized"
+            publishFailure(message: "Client not initialized")
             return
         }
 
         isAuthenticating = true
         loginState = .authenticating
-        authError = nil
+        clearFailure()
 
         do {
             let result = try await client.signInWithGoogle(redirectUri: redirectUri)
@@ -463,9 +624,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             loginState = .initial
         } catch {
             logger.error("Google sign-in error: \(error.localizedDescription)")
-            authError = error.localizedDescription
+            let message = Self.serverMessage(of: error) ?? error.localizedDescription
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(for: error, email: nil, otherwise: .error(message))
+            )
             isAuthenticating = false
-            loginState = .error(error.localizedDescription)
         }
     }
 
@@ -478,13 +643,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// to include this app's bundle id.
     public func signInWithApple() async {
         guard let client else {
-            authError = "Client not initialized"
+            publishFailure(message: "Client not initialized")
             return
         }
 
         isAuthenticating = true
         loginState = .authenticating
-        authError = nil
+        clearFailure()
 
         do {
             let result = try await client.signInWithApple()
@@ -496,9 +661,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             loginState = .initial
         } catch {
             logger.error("Apple sign-in error: \(error.localizedDescription)")
-            authError = error.localizedDescription
+            let message = Self.serverMessage(of: error) ?? error.localizedDescription
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(for: error, email: nil, otherwise: .error(message))
+            )
             isAuthenticating = false
-            loginState = .error(error.localizedDescription)
         }
     }
 
@@ -510,13 +679,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// RP domain.
     public func signInWithPasskey() async {
         guard let client else {
-            authError = "Client not initialized"
+            publishFailure(message: "Client not initialized")
             return
         }
 
         isAuthenticating = true
         loginState = .authenticating
-        authError = nil
+        clearFailure()
 
         do {
             let result = try await client.auth.signInWithPasskey()
@@ -529,9 +698,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             loginState = .initial
         } catch {
             logger.error("Passkey sign-in error: \(error.localizedDescription)")
-            authError = error.localizedDescription
+            let message = Self.serverMessage(of: error) ?? error.localizedDescription
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(for: error, email: nil, otherwise: .error(message))
+            )
             isAuthenticating = false
-            loginState = .error(error.localizedDescription)
         }
     }
 
@@ -602,7 +775,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             return false
         } catch {
             logger.error("Passkey enrollment error: \(error.localizedDescription)")
-            authError = error.localizedDescription
+            publishFailure(error, message: error.localizedDescription, state: nil)
             return false
         }
     }
@@ -638,7 +811,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             return true
         } catch {
             logger.error("deletePasskey error: \(error.localizedDescription)")
-            authError = error.localizedDescription
+            publishFailure(error, message: error.localizedDescription, state: nil)
             return false
         }
     }
@@ -659,7 +832,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         guard let client else { return }
 
         loginState = .sendingEmail
-        authError = nil
+        clearFailure()
 
         // The client's own `links.appBaseURL` is the single configured origin:
         // the link points back at it, and an incoming universal link is
@@ -684,8 +857,18 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             loginState = .emailSent(email: email)
         } catch {
             logger.error("Email sign-in request failed: \(error.localizedDescription)")
-            authError = "Failed to send sign-in email: \(error.localizedDescription)"
-            loginState = .error(error.localizedDescription)
+            // The server's own words when it said any — "you've been added to
+            // the waitlist" describes the failure; "failed to send sign-in
+            // email" describes something that didn't happen. The prefix is
+            // kept for failures the server never answered (an outage), where
+            // there is nothing better to say.
+            let message = Self.serverMessage(of: error)
+                ?? "Failed to send sign-in email: \(error.localizedDescription)"
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(for: error, email: email, otherwise: .error(message))
+            )
         }
     }
 
@@ -698,8 +881,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
 
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let token = components.queryItems?.first(where: { $0.name == "magic_token" })?.value else {
-            authError = "Invalid magic link URL"
-            loginState = .error("Invalid magic link URL")
+            publishFailure(message: "Invalid magic link URL", state: .error("Invalid magic link URL"))
             isAuthenticating = false
             return
         }
@@ -709,9 +891,13 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             // Auth success event will update isAuthenticated
         } catch {
             logger.error("Magic link verify failed: \(error.localizedDescription)")
-            authError = "Magic link expired or invalid"
+            let message = Self.serverMessage(of: error) ?? "Magic link expired or invalid"
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(for: error, email: nil, otherwise: .error(message))
+            )
             isAuthenticating = false
-            loginState = .error("Magic link expired or invalid")
         }
     }
 
@@ -729,9 +915,15 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
             // Auth success event will update isAuthenticated
         } catch {
             logger.error("OTP verify failed: \(error.localizedDescription)")
-            authError = "Invalid code. Please try again."
+            let message = Self.otpVerifyMessage(for: error)
+            publishFailure(
+                error,
+                message: message,
+                state: Self.failureState(
+                    for: error, email: email, otherwise: .emailSent(email: email)
+                )
+            )
             isAuthenticating = false
-            loginState = .emailSent(email: email)
         }
     }
 
@@ -742,22 +934,28 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// doesn't have to know about the in-flight `authError` field.
     public func reset() {
         loginState = .initial
-        authError = nil
+        clearFailure()
     }
 
     // MARK: - Logout
 
     public func logout() async {
-        guard let client else { return }
-        do {
-            try await client.logout(wipeLocal: true)
-        } catch {
-            logger.error("Logout error: \(error.localizedDescription)")
+        // Only the remote half needs a client. The manager's own state is
+        // cleared either way — it can hold a failure with no client attached
+        // ("Client not initialized"), and the reference is weak, so an early
+        // return here left `authError` / ``authFailure`` outliving the logout
+        // that was meant to end them (#3085).
+        if let client {
+            do {
+                try await client.logout(wipeLocal: true)
+            } catch {
+                logger.error("Logout error: \(error.localizedDescription)")
+            }
         }
         clearSessionScopedPasskeyState()
         isAuthenticated = false
         userId = nil
-        authError = nil
+        clearFailure()
         loginState = .initial
     }
 

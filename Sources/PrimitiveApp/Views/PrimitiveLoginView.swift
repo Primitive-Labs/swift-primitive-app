@@ -30,6 +30,56 @@ public struct PrimitiveLoginView: View {
         self.authManager = authManager
     }
 
+    /// The screens this view can show. One panel per outcome, so the mapping
+    /// from ``PrimitiveAuthManager/LoginState`` is a value a test can assert —
+    /// a SwiftUI `body` is not inspectable, and "a waitlisted user sees the
+    /// waitlist screen" (#3085) is exactly the thing worth pinning down.
+    public enum Panel: Equatable {
+        case signIn
+        case sendingEmail
+        case checkEmail(email: String)
+        case signingIn
+        /// The waitlist screen: this address is queued for an invite-only app,
+        /// so there is nothing to retry. Matches the Vue template's
+        /// `waitlisted` state.
+        case waitlisted
+    }
+
+    /// Which panel a login state shows.
+    ///
+    /// `.error` shows the sign-in panel (with the message underneath) because
+    /// every error state here is retryable from the form; the waitlist is the
+    /// one failure that is not, and gets a screen of its own.
+    public static func panel(for state: PrimitiveAuthManager.LoginState) -> Panel {
+        switch state {
+        case .initial, .error: return .signIn
+        case .sendingEmail: return .sendingEmail
+        case .emailSent(let email): return .checkEmail(email: email)
+        case .verifyingOtp, .authenticating: return .signingIn
+        case .waitlisted: return .waitlisted
+        }
+    }
+
+    /// Whether the shared red error line belongs under a panel.
+    ///
+    /// It doesn't under the waitlist panel: that panel already tells the whole
+    /// story, and the server's "this app is invite-only" text repeated in red
+    /// underneath reads as a second, contradicting outcome. The Vue template
+    /// shows no error there either.
+    public static func showsErrorMessage(in panel: Panel) -> Bool {
+        panel != .waitlisted
+    }
+
+    /// The waitlist screen's heading, mirroring `PrimitiveLogin.vue`.
+    public static let waitlistTitle = "You're on the waitlist"
+
+    /// The waitlist screen's body copy, mirroring `PrimitiveLogin.vue` — the
+    /// same words the app's web login shows the same person.
+    public static func waitlistDetail(appName: String) -> String {
+        "We've added you to the waitlist for \(appName). "
+            + "We'll send you an email when your access is approved."
+    }
+
     /// Which buttons to render — straight from the server's auth config
     /// (loaded by `PrimitiveAuthManager.attach`). Email-only until it
     /// resolves, so the form is usable immediately.
@@ -60,21 +110,24 @@ public struct PrimitiveLoginView: View {
 
                 // Auth content based on state
                 VStack(spacing: 16) {
-                    switch authManager.loginState {
-                    case .initial, .error:
+                    switch Self.panel(for: authManager.loginState) {
+                    case .signIn:
                         initialLoginView
                     case .sendingEmail:
                         ProgressView("Sending sign-in email...")
-                    case .emailSent(let sentEmail):
+                    case .checkEmail(let sentEmail):
                         emailSentView(email: sentEmail)
-                    case .verifyingOtp, .authenticating:
+                    case .signingIn:
                         ProgressView("Signing in...")
+                    case .waitlisted:
+                        waitlistedView
                     }
                 }
                 .frame(maxWidth: 320)
 
                 // Error message
-                if let error = authManager.authError {
+                if let error = authManager.authError,
+                   Self.showsErrorMessage(in: Self.panel(for: authManager.loginState)) {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -278,6 +331,32 @@ public struct PrimitiveLoginView: View {
             .accessibilityIdentifier("primitive.login.otpVerify")
 
             Button("Back to login") {
+                authManager.reset()
+                otpCode = ""
+            }
+            .font(.caption)
+        }
+    }
+
+    // MARK: - Waitlisted (#3085)
+
+    /// The invite-only app queued this address. Nothing to retry, so the
+    /// screen says what happened and offers the way back — the same shape as
+    /// the Vue template's `waitlisted` state.
+    private var waitlistedView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "clock.badge.checkmark")
+                .font(.system(size: 36))
+                .foregroundStyle(.orange)
+                .accessibilityIdentifier("primitive.login.waitlisted")
+            Text(Self.waitlistTitle)
+                .font(.headline)
+            Text(Self.waitlistDetail(appName: appName))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button("Back to sign in") {
                 authManager.reset()
                 otpCode = ""
             }

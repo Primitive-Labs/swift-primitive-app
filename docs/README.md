@@ -122,6 +122,9 @@ States the gate handles internally:
 - `startOAuth()` — Google OAuth via `ASWebAuthenticationSession`
 - `handleMagicLinkCallback(url:)` — for the URL scheme handler
 - `logout()`
+- `authFailure` — the last failed sign-in with its type intact: the error the client threw, its `AuthCode`, and the message published on `authError`. Branch on `authManager.authFailure?.code == .addedToWaitlist` (or `.invitationRequired`, `.domainNotAllowed`) instead of matching on message text; `nil` whenever `authError` is. `PrimitiveAuthManager.authCode(of:)` applies the same rule to an error you caught from `client.auth` yourself
+
+An `ADDED_TO_WAITLIST` rejection is not an error state: the manager lands in `loginState == .waitlisted(email:)` and `PrimitiveLoginView` shows a waitlist screen for it, matching the Vue template's `waitlisted` state. `verifyOtp` says "Invalid code. Please try again." only for a code the server rejected — every other failure shows the server's own message.
 
 ### 3. `BaoDataLoader<Data>` — reactive data loading
 
