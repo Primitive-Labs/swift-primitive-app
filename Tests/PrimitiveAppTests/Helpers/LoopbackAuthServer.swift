@@ -19,11 +19,22 @@ final class LoopbackAuthServer: @unchecked Sendable {
         static func ok(_ json: String) -> Reply { Reply(status: 200, json: json) }
     }
 
+    /// One request as it arrived, so a test can assert what the client SENT
+    /// (e.g. the `rpId` in a passkey start body) and not only what it did with
+    /// the answer.
+    struct RecordedRequest: Sendable {
+        /// The request line, e.g. `"POST /passkey/auth/start HTTP/1.1"`.
+        var line: String
+        /// The request body, decoded as UTF-8 (empty when there is none).
+        var body: String
+    }
+
     private let listener: NWListener
     private let queue = DispatchQueue(label: "loopback-auth-server")
     private let lock = NSLock()
     private var connections: [NWConnection] = []
     private var routes: [(match: String, reply: Reply)] = []
+    private var recorded: [RecordedRequest] = []
 
     /// The loopback port the server is listening on, valid after `start()`.
     private(set) var port: UInt16 = 0
@@ -70,32 +81,95 @@ final class LoopbackAuthServer: @unchecked Sendable {
             ?? Reply(status: 404, json: #"{"error":"unrouted in LoopbackAuthServer"}"#)
     }
 
-    /// Reads the request head, writes the scripted response, then closes —
-    /// `Connection: close` is what tells URLSession the body is complete.
+    // MARK: - Recorded requests
+
+    /// Every request the server has answered, oldest first.
+    func recordedRequests() -> [RecordedRequest] {
+        lock.withLock { recorded }
+    }
+
+    /// The body of the most recent request whose request line contains
+    /// `match`, or nil when no such request arrived.
+    func lastRequestBody(matching match: String) -> String? {
+        lock.withLock { recorded.last { $0.line.contains(match) }?.body }
+    }
+
+    /// `lastRequestBody(matching:)` decoded as a JSON object. Nil when there
+    /// was no such request, or its body is not a JSON object.
+    func lastRequestJSON(matching match: String) -> [String: Any]? {
+        guard let body = lastRequestBody(matching: match),
+              let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json
+    }
+
+    // MARK: - Serving
+
+    /// Reads the whole request — headers AND the `Content-Length` body, which
+    /// can arrive in a later TCP segment than the head — records it, writes
+    /// the scripted response, then closes: `Connection: close` is what tells
+    /// URLSession the response body is complete.
     private func answer(_ connection: NWConnection) {
+        receive(connection, buffer: Data())
+    }
+
+    private func receive(_ connection: NWConnection, buffer: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) {
-            [weak self] data, _, _, error in
+            [weak self] data, _, isComplete, error in
             guard let self, error == nil else {
                 connection.cancel()
                 return
             }
-            let requestLine = data
-                .flatMap { String(data: $0, encoding: .utf8) }?
-                .components(separatedBy: "\r\n").first ?? ""
-            let reply = self.reply(forRequestLine: requestLine)
-            let body = Data(reply.json.utf8)
+            var buffer = buffer
+            if let data { buffer.append(data) }
 
-            var head = "HTTP/1.1 \(reply.status) \(Self.reason(reply.status))\r\n"
-            head += "Content-Type: application/json\r\n"
-            head += "Content-Length: \(body.count)\r\n"
-            head += "Connection: close\r\n\r\n"
+            guard let request = Self.parse(buffer) else {
+                // Still mid-request: the header block or the declared body
+                // bytes have not all arrived yet.
+                if isComplete {
+                    connection.cancel()
+                    return
+                }
+                self.receive(connection, buffer: buffer)
+                return
+            }
 
-            var response = Data(head.utf8)
-            response.append(body)
-            connection.send(content: response, completion: .contentProcessed { _ in
-                connection.cancel()
-            })
+            self.lock.withLock { self.recorded.append(request) }
+            self.send(self.reply(forRequestLine: request.line), on: connection)
         }
+    }
+
+    /// The complete request in `buffer`, or nil while bytes are still missing.
+    private static func parse(_ buffer: Data) -> RecordedRequest? {
+        guard let separator = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+        let head = String(decoding: buffer[buffer.startIndex..<separator.lowerBound], as: UTF8.self)
+        let lines = head.components(separatedBy: "\r\n")
+        let contentLength = lines
+            .first { $0.lowercased().hasPrefix("content-length:") }
+            .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) }
+            ?? 0
+        let body = buffer[separator.upperBound...]
+        guard body.count >= contentLength else { return nil }
+        return RecordedRequest(
+            line: lines.first ?? "",
+            body: String(decoding: body.prefix(contentLength), as: UTF8.self)
+        )
+    }
+
+    private func send(_ reply: Reply, on connection: NWConnection) {
+        let body = Data(reply.json.utf8)
+
+        var head = "HTTP/1.1 \(reply.status) \(Self.reason(reply.status))\r\n"
+        head += "Content-Type: application/json\r\n"
+        head += "Content-Length: \(body.count)\r\n"
+        head += "Connection: close\r\n\r\n"
+
+        var response = Data(head.utf8)
+        response.append(body)
+        connection.send(content: response, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
 
     private static func reason(_ status: Int) -> String {

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import SwiftUI
 import os
 import JsBaoClient
@@ -106,7 +107,16 @@ open class PrimitiveAppState: ObservableObject {
             globalAdminAppId: "global-admin-app",
             logLevel: .info,
             storageConfig: .sqlite(),
-            auth: AuthConfig(persistJwtInStorage: true, storageKeyPrefix: config.appId),
+            auth: AuthConfig(
+                persistJwtInStorage: true,
+                storageKeyPrefix: config.appId,
+                // The relying party every passkey ceremony runs against
+                // (#3080). A native request sends no `Origin`, so without it
+                // the server picks among the app's configured relying parties
+                // on its own. Consulted through the `open` hook, so an app
+                // names another one without reimplementing this method.
+                passkeyRpId: passkeyRpId(for: config)
+            ),
             autoNetwork: false
         ))
         self.client = client
@@ -178,6 +188,56 @@ open class PrimitiveAppState: ObservableObject {
             origin += ":\(port)"
         }
         return URL(string: origin)
+    }
+
+    /// The passkey relying party this app's environment implies: the host of
+    /// its validated web origin, or nil when the environment names none.
+    ///
+    /// A native passkey request carries no `Origin` header, so with no rpId
+    /// the server picks among the app's configured relying parties on its own
+    /// — the multi-RP mis-selection #3024 fixed in the client. The host of
+    /// `webUrl` is exactly the RP a browser served this app from that origin
+    /// would be given, so deriving it here makes the two agree by default.
+    ///
+    /// Pure and static so the parsing is tested rather than reviewed, and
+    /// composed on `linksBaseURL` so the origin floor is enforced once: junk
+    /// in a hand-written `primitive.json` names no relying party rather than a
+    /// broken one. `URL.host` drops the port, which is the rpId shape
+    /// (`localhost` from `http://localhost:5173` — the relying party a new app
+    /// is created with configured).
+    ///
+    /// An IP-literal host derives nothing: an IP address is never a valid
+    /// WebAuthn relying-party id (no `webcredentials:` entitlement can name
+    /// one), and a `http://127.0.0.1` dev `webUrl` must not shadow the
+    /// `localhost` RP the app is seeded with — that shape keeps today's
+    /// server-side selection.
+    public nonisolated static func defaultPasskeyRpId(webUrl: String?) -> String? {
+        guard let host = linksBaseURL(webUrl: webUrl)?.host,
+              IPv4Address(host) == nil,
+              IPv6Address(host) == nil else { return nil }
+        return host
+    }
+
+    /// The relying party this app's passkey ceremonies run against, consulted
+    /// once by `initialize()` when it builds the client.
+    ///
+    /// Default: the host of the environment's `webUrl`
+    /// (``defaultPasskeyRpId(webUrl:)``) — the same relying party a browser
+    /// served this app from that origin is given. Override to name another one
+    /// (it must be among the app's configured passkey relying parties, or the
+    /// server rejects the ceremony with `PASSKEY_RP_NOT_CONFIGURED`), or
+    /// return nil to leave the selection to the server:
+    ///
+    /// ```swift
+    /// override func passkeyRpId(for config: PrimitiveAppConfig) -> String? {
+    ///     "example.com"   // the configured parent domain of app.example.com
+    /// }
+    /// ```
+    ///
+    /// A single call can still override it: `signInWithPasskey(rpId:)` /
+    /// `enrollPasskey(rpId:)` on ``PrimitiveAuthManager``.
+    open func passkeyRpId(for config: PrimitiveAppConfig) -> String? {
+        Self.defaultPasskeyRpId(webUrl: config.webUrl)
     }
 
     /// Connect the client (called after auth succeeds).

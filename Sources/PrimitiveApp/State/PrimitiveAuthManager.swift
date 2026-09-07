@@ -677,7 +677,14 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// credential flow). Requires the app's Associated Domains
     /// (`webcredentials:`) entitlement to cover the server's configured
     /// RP domain.
-    public func signInWithPasskey() async {
+    ///
+    /// `rpId` names the relying party for THIS ceremony (#3080). Leave it nil
+    /// — the normal case — and the client uses `AuthConfig.passkeyRpId`, which
+    /// ``PrimitiveAppState/initialize()`` sets from the environment's
+    /// `webUrl`. Either way the manager's bookkeeping is the same:
+    /// `loginState`, `isAuthenticating`, `authFailure` and the on-device
+    /// passkey hint.
+    public func signInWithPasskey(rpId: String? = nil) async {
         guard let client else {
             publishFailure(message: "Client not initialized")
             return
@@ -688,7 +695,7 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
         clearFailure()
 
         do {
-            let result = try await client.auth.signInWithPasskey()
+            let result = try await client.auth.signInWithPasskey(rpId: rpId)
             logger.info("Passkey sign-in done: userId=\(result.user.userId)")
             recordPasskeyOnDevice()
             // .authSuccess event updates isAuthenticated
@@ -761,11 +768,16 @@ public class PrimitiveAuthManager: NSObject, ObservableObject {
     /// Register a passkey for the signed-in user (the enrollment sheet's
     /// "Add Passkey" action; also usable from a profile/settings screen).
     /// Returns true on success.
+    ///
+    /// `rpId` names the relying party to register the passkey under (#3080),
+    /// exactly as in ``signInWithPasskey(rpId:)``: nil defers to
+    /// `AuthConfig.passkeyRpId`, which ``PrimitiveAppState/initialize()`` sets
+    /// from the environment's `webUrl`.
     @discardableResult
-    public func enrollPasskey(deviceName: String? = nil) async -> Bool {
+    public func enrollPasskey(deviceName: String? = nil, rpId: String? = nil) async -> Bool {
         guard let client else { return false }
         do {
-            _ = try await client.auth.registerPasskey(deviceName: deviceName)
+            _ = try await client.auth.registerPasskey(deviceName: deviceName, rpId: rpId)
             logger.info("Passkey enrolled")
             recordPasskeyOnDevice()
             await refreshPasskeys()
