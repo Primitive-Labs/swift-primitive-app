@@ -28,7 +28,7 @@ The client has **four** distinct stages your data passes through, and each one s
 
 ### 1. Server — canonical truth
 
-All authoritative state lives server-side. Every connected client gets a consistent view via WebSocket sync. The client never needs the network for *reads* once a doc is open and synced — but it *will* round-trip for things like `documents.list()`, `me.get()`, blob fetches, and direct record CRUD that doesn't go through Y.
+All authoritative state lives server-side. Every connected client gets a consistent view via WebSocket sync. The client never needs the network for *reads* once a doc is open and synced — but it *will* round-trip for things like `me.ownedDocuments()`, `me.get()`, blob fetches, and direct record CRUD that doesn't go through Y.
 
 ### 2. Y.Doc — in-memory CRDT (your records, conceptually)
 

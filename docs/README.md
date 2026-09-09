@@ -277,7 +277,7 @@ See [DemoAppState.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/DemoA
 
 See [PrimitiveAppDemoApp.swift:22-23](../../primitive-app-demo/Sources/PrimitiveAppDemo/PrimitiveAppDemoApp.swift#L22-L23).
 
-**3. Read from `appState.documents`, don't re-fetch.** `connectClient()` already populates it, `fetchDocuments()` keeps it fresh, and it's `@Published` so views update reactively. If you do your own `client.documents.list()` call you'll race against connect-time.
+**3. Read from `appState.documents`, don't re-fetch.** `connectClient()` already populates it, `fetchDocuments()` keeps it fresh, and it's `@Published` so views update reactively. If you do your own `client.me.ownedDocuments()` call you'll race against connect-time.
 
 **4. Use `BaoDataLoader<Data>`'s `.bind(client:subscribeTo:load:)` from `.task`, and `.unbind()` from `.onDisappear`.** Bind once. If your data depends on a doc being open, set `loader.documentReady = ...` instead of conditionally binding — the loader's `documentReady` gate handles ready/not-ready transitions, including resetting `initialDataLoaded` if the doc closes.
 

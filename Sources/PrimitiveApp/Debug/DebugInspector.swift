@@ -307,7 +307,7 @@ public final class DebugInspector: @unchecked Sendable {
             case "/api/cascade-docs":
                 // Union of every document the caller reaches via
                 // collection membership. The /api/snapshot documents
-                // list is built from `documents.list()`, which only
+                // list is built from `me.ownedDocuments()`, which only
                 // returns docs with a direct permission grant —
                 // cascade-only docs (e.g. shared-collection contents,
                 // per-collection refs docs) never appear there. This
@@ -617,8 +617,10 @@ public final class DebugInspector: @unchecked Sendable {
             case "doc/create":
                 // DocumentsAPI.create delegates to the local-first
                 // JsBaoClient.createDocument (js-bao-wss#1108): a ULID is minted
-                // client-side, the doc is writable immediately, and the server
-                // commit happens in the background.
+                // client-side, the metadata row is written locally, and the
+                // server commit happens in the background. The document is not
+                // open — a caller that wants to write it opens it first
+                // (js-bao-wss#3200); the inspector only reports the new id.
                 var opts = CreateDocumentOptions()
                 if let title = body["title"] as? String, !title.isEmpty { opts.title = title }
                 if let tags = body["tags"] as? [String] { opts.tags = tags }

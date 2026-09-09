@@ -4,7 +4,7 @@ import XCTest
 /// Issue #2982 — the app's web counterpart, carried from the selected
 /// Primitive environment into the binary.
 ///
-/// `webUrl` is one value per environment in `.primitive/config.json`, written
+/// `webUrl` is one value per environment in `primitive/config.json`, written
 /// into `primitive.json` by the template's resolve script. It drives BOTH the
 /// outgoing email target (the https callback the sign-in link points at) and
 /// the incoming trust (`client.links.appBaseURL`, which is what makes a tapped

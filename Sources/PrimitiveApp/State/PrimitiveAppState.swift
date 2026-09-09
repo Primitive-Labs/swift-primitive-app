@@ -352,7 +352,7 @@ open class PrimitiveAppState: ObservableObject {
         do {
             // Compose the owned + shared union inline (the client exposes only
             // `ownedDocuments` / `sharedDocuments`, 1:1 with the JS app layer;
-            // both replace the deprecated `documents.list()`). Owned wins on
+            // both replaced the removed `documents.list()`). Owned wins on
             // overlap.
             async let ownedTask = client.me.ownedDocuments(limit: 50)
             async let sharedTask = client.me.sharedDocuments(limit: 50)
