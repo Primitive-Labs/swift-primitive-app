@@ -302,11 +302,6 @@ public final class BaoDataLoader<Data>: ObservableObject {
     /// load. Feeds `showSkeleton` while `documentReady` and not yet loaded.
     private var skeletonDelayElapsed: Bool = false
 
-    /// Subscriptions only fire reloads after the first successful load. Prevents
-    /// races where a `.sync` event arrives during the initial load and we
-    /// double-fetch.
-    private var subscriptionsEnabled: Bool = false
-
     public init() {}
 
     deinit {
@@ -379,7 +374,6 @@ public final class BaoDataLoader<Data>: ObservableObject {
         client = nil
         loadClosure = nil
         onErrorCallback = nil
-        subscriptionsEnabled = false
         data = nil
         initialDataLoaded = false
         isLoading = false
@@ -423,7 +417,6 @@ public final class BaoDataLoader<Data>: ObservableObject {
         data = nil
         error = nil
         initialDataLoaded = false
-        subscriptionsEnabled = false
         isLoading = false
         disarmSkeletonTimer()
     }
@@ -437,14 +430,25 @@ public final class BaoDataLoader<Data>: ObservableObject {
         await performLoad()
     }
 
-    private func scheduleReload() {
+    /// - Parameter reactive: `true` when a subscription event asked for this
+    ///   reload. Those fire from the moment the loader binds (#3023), and a
+    ///   large initial sync delivers one notification per record, so they pay
+    ///   the debounce even before the first load has finished — taking the
+    ///   first-load fast path there would cancel and restart a load per record
+    ///   instead of coalescing the burst into one.
+    private func scheduleReload(reactive: Bool = false) {
         guard documentReady, !isPaused, loadClosure != nil else { return }
         reloadTask?.cancel()
+        // Retire the load in flight now rather than when the reload starts: a
+        // reload has been decided on, so a load that resolves during the
+        // debounce window must not publish its (usually empty) result and mark
+        // the loader loaded (#3023).
+        loadGeneration &+= 1
         // The debounce exists to coalesce bursts of *reactive* reloads (model
         // events). The FIRST load shouldn't pay it: delaying it 50ms is what
         // makes a `.loading` ProgressView flash before instantly-available
         // local CRDT data lands. Run load #0 immediately; debounce the rest.
-        let delay = initialDataLoaded ? debounceInterval : 0
+        let delay = (initialDataLoaded || reactive) ? debounceInterval : 0
         reloadTask = Task { @MainActor [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -475,7 +479,6 @@ public final class BaoDataLoader<Data>: ObservableObject {
             error = nil
             if !initialDataLoaded {
                 initialDataLoaded = true
-                subscriptionsEnabled = true
             }
             disarmSkeletonTimer()
         } catch {
@@ -503,7 +506,6 @@ public final class BaoDataLoader<Data>: ObservableObject {
             // Reset like the JS version does — re-binding to a fresh document
             // means re-running the initial load.
             initialDataLoaded = false
-            subscriptionsEnabled = false
             reloadTask?.cancel()
             reloadTask = nil
             // The skeleton timer runs independently of `reloadTask`, so cancel
@@ -578,12 +580,21 @@ public final class BaoDataLoader<Data>: ObservableObject {
         // `@Sendable` so it can be handed to the model-subscription triggers,
         // whose callbacks fire off the main thread (#1992). The body only
         // hops to the main actor, so it captures nothing thread-bound.
-        let reloadAfterInitialLoad: @Sendable () -> Void = { [weak self] in
+        // #3023 — deliberately NOT gated on the first load having finished.
+        // The loader used to arm its subscriptions only once a load had
+        // succeeded, to avoid double-fetching when an event arrived mid-load.
+        // That is precisely the event worth keeping: the initial sync of a
+        // document opened with an empty local replica lands while the first
+        // load is still reading, so gating it left the view on the empty
+        // result with nothing left to move it. The extra fetch is cheap, the
+        // debounce coalesces bursts of them, and the generation counter in
+        // `performLoad` makes sure the load that started last is the one whose
+        // result lands.
+        let scheduleReloadFromEvent: @Sendable () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.subscriptionsEnabled else { return }
                 guard self.documentReady, !self.isPaused else { return }
-                self.scheduleReload()
+                self.scheduleReload(reactive: true)
             }
         }
 
@@ -591,50 +602,50 @@ public final class BaoDataLoader<Data>: ObservableObject {
             switch trigger {
             case .onSync:
                 let sub = client.observeOnMainActor(SyncEvent.self) { _ in
-                    reloadAfterInitialLoad()
+                    scheduleReloadFromEvent()
                 }
                 subscriptions.append(sub)
 
             case .onDocumentSyncStateChanged:
                 let sub = client.observeOnMainActor(DocumentSyncStateChangedEvent.self) { event in
                     if event.state == "synced" {
-                        reloadAfterInitialLoad()
+                        scheduleReloadFromEvent()
                     }
                 }
                 subscriptions.append(sub)
 
             case .onDocumentEvents:
                 let loadedSub = client.observeOnMainActor(DocumentLoadedEvent.self) { _ in
-                    reloadAfterInitialLoad()
+                    scheduleReloadFromEvent()
                 }
                 subscriptions.append(loadedSub)
                 let closedSub = client.observeOnMainActor(DocumentClosedEvent.self) { _ in
-                    reloadAfterInitialLoad()
+                    scheduleReloadFromEvent()
                 }
                 subscriptions.append(closedSub)
 
             case .onConnect:
                 let sub = client.observeOnMainActor(StatusChangedEvent.self) { event in
                     if event.status == .connected {
-                        reloadAfterInitialLoad()
+                        scheduleReloadFromEvent()
                     }
                 }
                 subscriptions.append(sub)
 
             case .onModelChange(let model):
                 let unsubscribe = model.subscribe {
-                    reloadAfterInitialLoad()
+                    scheduleReloadFromEvent()
                 }
                 subscriptions.append(EventSubscription(cancel: unsubscribe))
 
             case .onModel(let subscribe):
                 let unsubscribe = subscribe {
-                    reloadAfterInitialLoad()
+                    scheduleReloadFromEvent()
                 }
                 subscriptions.append(EventSubscription(cancel: unsubscribe))
 
             case .custom(let installer):
-                if let sub = installer(client, reloadAfterInitialLoad) {
+                if let sub = installer(client, scheduleReloadFromEvent) {
                     subscriptions.append(sub)
                 }
             }
