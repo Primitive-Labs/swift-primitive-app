@@ -83,7 +83,11 @@ extension CollectionDocumentInfo {
 
 extension DatabaseInfo {
     var inspectorDict: [String: Any] {
-        var dict = compactDict([
+        // Neither `celContext` nor its legacy wire-name alias `metadata` is
+        // projected: the client deprecated both in favour of resource
+        // metadata categories (#1815), and the app layer must not read a
+        // deprecated client declaration.
+        compactDict([
             "databaseId": databaseId,
             "title": title,
             "databaseType": databaseType,
@@ -92,13 +96,6 @@ extension DatabaseInfo {
             "createdAt": createdAt,
             "modifiedAt": modifiedAt,
         ])
-        // `celContext` is not projected: the client deprecated it in favour of
-        // resource metadata categories (issue #1420). `metadata` is the same
-        // server field under its legacy wire name and is not deprecated on
-        // `DatabaseInfo`, so the CEL-context values stay visible in the
-        // inspector under that key.
-        if metadata != nil { dict["metadata"] = inspectorAny(metadata) }
-        return dict
     }
 }
 
