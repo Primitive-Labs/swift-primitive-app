@@ -82,7 +82,7 @@ function __inspectorCore__() {
     docs: [], selectedDocId: null,
     // Cascade-only docs: every doc the user reaches via collection
     // membership but doesn't have a direct permission grant on (so
-    // `documents.list()` — which powers `docs` — never returns them).
+    // `me.ownedDocuments()` — which powers `docs` — never returns them).
     // Loaded lazily on Documents tab entry from `/api/cascade-docs`.
     // Each entry: { id, title, tags, permission, collectionIds }.
     cascadeDocs: [], cascadeDocsLoading: false,

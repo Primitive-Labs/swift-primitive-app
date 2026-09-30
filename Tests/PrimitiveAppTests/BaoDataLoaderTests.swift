@@ -331,6 +331,118 @@ final class BaoDataLoaderTests: XCTestCase {
         loader.unbind()
     }
 
+    /// #3023 — a change that lands while the FIRST load is in flight must not
+    /// be dropped.
+    ///
+    /// The loader only armed its subscriptions once the first load had
+    /// succeeded, so anything that arrived while that load was still running
+    /// was swallowed. That is exactly when the initial sync of a document
+    /// opened with an empty local replica lands: the first load reads zero
+    /// rows, the records arrive a moment later, and nothing reloads — the view
+    /// keeps the empty result until something else happens to move it.
+    func testChangeDuringFirstLoadStillReloads() async throws {
+        let loader = BaoDataLoader<Int>()
+        let client = makeTestClient()
+        loader.debounceInterval = 0
+        let callCount = TestCounter()
+        let firstCallStarted = TestFlag()
+        let trigger = ReloadTrigger()
+
+        loader.bind(
+            client: client,
+            subscribeTo: [.custom { _, reload in
+                trigger.fire = reload
+                return nil
+            }]
+        ) { _ in
+            let myCall = await callCount.increment()
+            if myCall == 1 {
+                await firstCallStarted.set()
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            return myCall
+        }
+
+        for _ in 0..<40 {
+            if await firstCallStarted.value { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let started = await firstCallStarted.value
+        XCTAssertTrue(started, "The first load should be in flight before the change lands")
+
+        // The initial sync lands while the first load is still reading.
+        trigger.fire?()
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let count = await callCount.value
+        XCTAssertEqual(count, 2, "A change during the first load must schedule a reload")
+        XCTAssertEqual(loader.data, 2, "The reload's result is what the view keeps")
+
+        loader.unbind()
+    }
+
+    /// #3023 — a BURST of changes during the first load is one reload, not one
+    /// per change.
+    ///
+    /// Now that the subscriptions fire from the moment the loader binds, the
+    /// events of a large initial sync — the Swift root-map observer notifies
+    /// per inserted record — all arrive while the first load is still reading.
+    /// The first load deliberately skips the debounce so local CRDT data
+    /// doesn't flash a spinner; a reactive event must not inherit that fast
+    /// path, or each record cancels and restarts a load of its own.
+    func testBurstOfChangesDuringFirstLoadCoalescesIntoOneReload() async throws {
+        let loader = BaoDataLoader<Int>()
+        let client = makeTestClient()
+        loader.debounceInterval = 0.2
+        let callCount = TestCounter()
+        let firstCallStarted = TestFlag()
+        let trigger = ReloadTrigger()
+
+        loader.bind(
+            client: client,
+            subscribeTo: [.custom { _, reload in
+                trigger.fire = reload
+                return nil
+            }]
+        ) { _ in
+            let myCall = await callCount.increment()
+            if myCall == 1 {
+                await firstCallStarted.set()
+                // Long enough that the whole burst lands mid-load.
+                try await Task.sleep(nanoseconds: 600_000_000)
+            }
+            return myCall
+        }
+
+        for _ in 0..<40 {
+            if await firstCallStarted.value { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let started = await firstCallStarted.value
+        XCTAssertTrue(
+            started,
+            "The first load should be in flight before the burst lands"
+        )
+
+        // One notification per record of the initial sync.
+        for _ in 0..<20 {
+            trigger.fire?()
+            await Task.yield()
+        }
+
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        let count = await callCount.value
+        XCTAssertEqual(
+            count, 2,
+            "A burst of changes during the first load must coalesce into one reload"
+        )
+        XCTAssertEqual(loader.data, 2, "The reload's result is what the view keeps")
+
+        loader.unbind()
+    }
+
     /// When a document becomes unready mid-load, the independent skeleton timer
     /// (and its elapsed flag) must be reset — otherwise a stale
     /// `skeletonDelayElapsed` flag makes the *next* load flash the skeleton
@@ -409,4 +521,11 @@ private actor TestFlag {
     private var flag = false
     var value: Bool { flag }
     func set() { flag = true }
+}
+
+/// Holds the reload callback a `.custom` trigger is handed, so a test can fire
+/// it at a chosen moment — the stand-in for a sync landing mid-load.
+@MainActor
+private final class ReloadTrigger {
+    var fire: (() -> Void)?
 }
