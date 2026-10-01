@@ -45,9 +45,10 @@ private func compactDict(_ pairs: [String: Any?]) -> [String: Any] {
 }
 
 extension CollectionInfo {
-    // `contextId` is not projected: the client deprecated it in favour of
-    // resource metadata categories (issue #1420), which the inspector reads
-    // under `md.self.<category>.<key>` rather than as a collection field.
+    // A collection's binding to an external entity is a resource metadata
+    // category (issue #1420; the old `contextId` field was removed in #3926),
+    // which the inspector reads under `md.self.<category>.<key>` rather than
+    // as a collection field.
     var inspectorDict: [String: Any] {
         compactDict([
             "collectionId": collectionId,
