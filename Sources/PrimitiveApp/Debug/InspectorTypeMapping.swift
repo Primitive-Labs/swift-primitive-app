@@ -84,10 +84,6 @@ extension CollectionDocumentInfo {
 
 extension DatabaseInfo {
     var inspectorDict: [String: Any] {
-        // Neither `celContext` nor its legacy wire-name alias `metadata` is
-        // projected: the client deprecated both in favour of resource
-        // metadata categories (#1815), and the app layer must not read a
-        // deprecated client declaration.
         compactDict([
             "databaseId": databaseId,
             "title": title,
