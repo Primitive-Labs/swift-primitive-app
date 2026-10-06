@@ -81,7 +81,7 @@ What it publishes (all `@Published`, so SwiftUI views auto-rerender):
 
 The lifecycle methods you call from your views:
 - `initialize()` — load config, create the client. Call once from `.task`.
-- `connectClient()` — open the WebSocket. `AuthGateView` calls this for you after auth succeeds.
+- `connectClient()` — open the WebSocket, then load the profile and the document list. `AuthGateView` calls this for you after auth succeeds. It waits up to `connectTimeout` (10 seconds by default) for the connection; when the connection is still down by then it sets `errorMessage`, and it runs again on its own once the connection gets through, clearing the error and loading the account.
 - `fetchDocuments()` — refresh the `documents` array from the REST API. Already called as part of `connectClient()`.
 - `selectDocument(_:)` — open a doc and start syncing it.
 - `cleanup()` — tear everything down.
@@ -90,6 +90,7 @@ The override hooks (subclass and override these for typed Y.Doc data — see [Ba
 - `onDocumentOpened(documentId:)` — called once a doc is open and connected to the shared store. Refresh your `@Published` model arrays here from the codegen facade (`items = ItemRecord.query()`); no per-doc model wrappers to construct. Make sure you registered your models in `connectClient()` (`GeneratedModels.register(on: client)`) so the facade sees the doc — see [swift-client codegen docs](../../../swift-client/docs/codegen.md).
 - `onDocumentSynced(documentId:)` — called when initial sync completes.
 - `onDocumentSyncStateChanged(documentId:state:)` — called when a remote change lands and the document reports `state == "synced"`.
+- `onSignedOut()` — called when the account signs out, after the base class has cleared the profile, the document list, the selected document and `errorMessage`. Clear your own per-account `@Published` state here so the next account to sign in never sees it.
 
 > Real subclassing example: [DemoAppState.swift](../../primitive-app-demo/Sources/PrimitiveAppDemo/DemoAppState.swift) — resolves/opens the default document and reads its records through the codegen facade (`TaskRecord.query()` / `record.save(in:)`); no per-doc model wrappers.
 
@@ -253,7 +254,7 @@ The interesting part is what happens in the binding's `set` closure: every keyst
 
 ## Patterns that show up everywhere
 
-**1. Subclass `PrimitiveAppState` and register your models.** The base class doesn't know about your record types. Register every codegen'd model **once at startup** by overriding `connectClient()` and calling `GeneratedModels.register(on: client)` right after `await super.connectClient()` — this mirrors each open document into the client's shared cross-document store so the facade and the debug inspector see it. The base class does **not** auto-register; this one line is each app's responsibility (it's a no-op until you add a model to `models.toml`).
+**1. Subclass `PrimitiveAppState` and register your models.** The base class doesn't know about your record types. Register every codegen'd model **once at startup** by overriding `connectClient()` and calling `GeneratedModels.register(on: client)` right after `await super.connectClient()` (return early while `client?.isConnected` is false: `connectClient()` runs again when the connection arrives) — this mirrors each open document into the client's shared cross-document store so the facade and the debug inspector see it. The base class does **not** auto-register; this one line is each app's responsibility (it's a no-op until you add a model to `models.toml`).
 
 Then read and write through the codegen facade — no per-doc model wrappers:
 

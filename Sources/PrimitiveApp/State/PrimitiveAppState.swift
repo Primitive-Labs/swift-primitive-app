@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Network
 import SwiftUI
@@ -64,6 +65,15 @@ open class PrimitiveAppState: ObservableObject {
     private var syncSubscription: EventSubscription?
     private var docLoadedSubscription: EventSubscription?
     private var documentSyncStateSubscription: EventSubscription?
+    private var signOutSubscription: AnyCancellable?
+
+    /// Bumped on every sign-out, so a `connectClient()` still in flight for
+    /// the previous account drops its results instead of publishing them.
+    private var sessionGeneration = 0
+
+    /// Set when `connectClient()` reported "could not connect", so the
+    /// connection arriving later runs it again.
+    private var resumesConnectOnConnected = false
 
     public init() {}
 
@@ -136,6 +146,7 @@ open class PrimitiveAppState: ObservableObject {
 
         setupEventSubscriptions(client)
         authManager.attach(to: client)
+        observeSignOut()
 
         #if DEBUG
         DebugInspector.start(client: client, appState: self, appConfig: config)
@@ -240,15 +251,31 @@ open class PrimitiveAppState: ObservableObject {
         Self.defaultPasskeyRpId(webUrl: config.webUrl)
     }
 
+    /// How long ``connectClient()`` waits for the connection before it
+    /// reports `"Connection error: could not connect"`.
+    ///
+    /// The client retries a failed connect on its own backoff (the first retry
+    /// is about a second later), so the default covers its first few retries.
+    public var connectTimeout: TimeInterval = 10
+
     /// Connect the client (called after auth succeeds).
+    ///
+    /// Waits up to ``connectTimeout`` for the connection, then loads the
+    /// profile (`userName`, `userEmail`, `userAvatarUrl`) and the document
+    /// list. When the connection is still down by then it sets `errorMessage`
+    /// and returns; the client keeps retrying, and when it gets through this
+    /// method runs again, clears the error and loads the account.
     ///
     /// Subclasses may override to run app-specific setup after the
     /// websocket is up (e.g. resolve a per-user singleton doc, bind
     /// models). Call `super.connectClient()` first so the base
     /// class still connects, hydrates `userName`, and fetches the
-    /// document list.
+    /// document list, and skip the setup while `client?.isConnected` is
+    /// false — the late connect calls the override again.
     open func connectClient() async {
         guard let client else { return }
+        let generation = sessionGeneration
+        let deadline = Date().addingTimeInterval(connectTimeout)
 
         connectionStatus = "Connecting..."
         statusColor = .yellow
@@ -257,19 +284,33 @@ open class PrimitiveAppState: ObservableObject {
         // and since #2663 `connect()` does not override an explicit disconnect.
         // This call is the app saying it wants to be connected, which is what
         // `setShouldConnect` expresses — so a sign-in after a sign-out
-        // reconnects rather than silently doing nothing. It resolves once the
-        // connect has settled, so the check below reports a failure the same
-        // way the thrown error used to.
-        await client.setShouldConnect(true)
-        guard client.isConnected else {
-            errorMessage = "Connection error: could not connect"
+        // reconnects rather than silently doing nothing. It resolves only once
+        // the first attempt has settled, and a stalled handshake can take far
+        // longer than the window, so it is not awaited: the wait below bounds
+        // the first attempt too, while the client keeps trying behind it.
+        Task { await client.setShouldConnect(true) }
+        let connected = await waitUntilConnected(client, generation: generation, deadline: deadline)
+        // The account signed out while it was connecting.
+        guard generation == sessionGeneration else { return }
+        guard connected else {
+            errorMessage = Self.connectionErrorMessage
             connectionStatus = "Error"
             statusColor = .red
+            resumesConnectOnConnected = true
             return
         }
+        resumesConnectOnConnected = false
+        if errorMessage == Self.connectionErrorMessage { errorMessage = nil }
+        // A resumed call finds the client already connected, so no
+        // `.connected` event follows to undo the "Connecting..." above.
+        isConnected = true
+        connectionStatus = "Connected"
+        statusColor = .green
         addSyncMessage("Connected")
 
         if let me = try? await client.me.get() {
+            // The account signed out while the profile was in flight.
+            guard generation == sessionGeneration else { return }
             // `me.get()` is now a typed `UserProfile` (was a raw dict).
             userName = me.name ?? ""
             userEmail = me.email
@@ -277,7 +318,22 @@ open class PrimitiveAppState: ObservableObject {
             if userName.isEmpty { userName = userEmail }
         }
 
+        guard generation == sessionGeneration else { return }
         await fetchDocuments()
+    }
+
+    private static let connectionErrorMessage = "Connection error: could not connect"
+
+    /// True once the client is connected, false when `deadline` passes first
+    /// or the account signs out.
+    private func waitUntilConnected(_ client: JsBaoClient, generation: Int, deadline: Date) async -> Bool {
+        while !client.isConnected {
+            guard generation == sessionGeneration, Date() < deadline, !Task.isCancelled else {
+                return false
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return true
     }
 
     /// Override to provide additional paths to search for `primitive.json`.
@@ -301,6 +357,11 @@ open class PrimitiveAppState: ObservableObject {
                 self.isConnected = true
                 self.connectionStatus = "Connected"
                 self.statusColor = .green
+                // `connectClient()` gave up waiting; finish it now.
+                if self.resumesConnectOnConnected {
+                    self.resumesConnectOnConnected = false
+                    Task { await self.connectClient() }
+                }
             case .connecting:
                 self.connectionStatus = "Connecting..."
                 self.statusColor = .yellow
@@ -334,6 +395,50 @@ open class PrimitiveAppState: ObservableObject {
         }
     }
 
+    /// Clear the signed-in account's state the moment ``authManager`` reports
+    /// it signed out, whichever path got there (the Profile screen's Sign Out,
+    /// or a session the client could not keep).
+    private func observeSignOut() {
+        signOutSubscription = authManager.$isAuthenticated
+            .removeDuplicates()
+            .dropFirst()
+            .filter { !$0 }
+            .sink { [weak self] _ in
+                // `@Published` delivers synchronously on the writer's thread,
+                // and the auth manager is main-actor isolated.
+                MainActor.assumeIsolated { self?.resetSignedInState() }
+            }
+    }
+
+    private func resetSignedInState() {
+        sessionGeneration += 1
+        resumesConnectOnConnected = false
+        userName = ""
+        userEmail = ""
+        userAvatarUrl = nil
+        documents = []
+        selectedDocId = nil
+        isSyncing = false
+        isSynced = false
+        syncMessages = []
+        errorMessage = nil
+        onSignedOut()
+    }
+
+    /// Called when the signed-in account signs out, after the base class has
+    /// cleared the profile (`userName`, `userEmail`, `userAvatarUrl`), the
+    /// document list, the selected document and `errorMessage`.
+    ///
+    /// Override to clear your own per-account state, so the next account to
+    /// sign in never sees the previous one's data:
+    ///
+    /// ```swift
+    /// override func onSignedOut() {
+    ///     todos = []
+    /// }
+    /// ```
+    open func onSignedOut() {}
+
     /// Called when a document finishes syncing. Override to reload content.
     open func onDocumentSynced(documentId: String) {}
 
@@ -343,9 +448,17 @@ open class PrimitiveAppState: ObservableObject {
 
     // MARK: - Documents
 
-    /// Fetch the list of documents from the REST API.
+    /// Fetch the list of documents from the REST API: every page of the
+    /// owned and shared lists (up to 50 pages of 100 each), plus owned
+    /// documents only the local cache knows yet.
     public func fetchDocuments() async {
         guard let client else { return }
+        await fetchDocuments(from: .client(client))
+    }
+
+    /// `fetchDocuments()` over a given list source.
+    func fetchDocuments(from source: DocumentListSource) async {
+        let generation = sessionGeneration
         isLoadingDocs = true
         defer { isLoadingDocs = false }
 
@@ -354,18 +467,17 @@ open class PrimitiveAppState: ObservableObject {
             // `ownedDocuments` / `sharedDocuments`, 1:1 with the JS app layer;
             // both replaced the removed `documents.list()`). Owned wins on
             // overlap.
-            async let ownedTask = client.me.ownedDocuments(limit: 50)
-            async let sharedTask = client.me.sharedDocuments(limit: 50)
-            let owned = try await ownedTask
-            let shared = try await sharedTask
+            let lists = try await source.readAll()
+            // The account signed out while the list was in flight.
+            guard generation == sessionGeneration else { return }
 
             var seen = Set<String>()
             var merged: [PrimitiveDocumentInfo] = []
-            for info in owned where seen.insert(info.documentId).inserted {
+            for info in lists.owned where seen.insert(info.documentId).inserted {
                 merged.append(PrimitiveDocumentInfo(
                     id: info.documentId, title: info.title, permission: info.permission.rawValue))
             }
-            for share in shared.items where seen.insert(share.document.documentId).inserted {
+            for share in lists.shared where seen.insert(share.document.documentId).inserted {
                 merged.append(PrimitiveDocumentInfo(
                     id: share.document.documentId,
                     title: share.document.title,
@@ -379,6 +491,7 @@ open class PrimitiveAppState: ObservableObject {
             // a `URLSession` cancellation into `CancellationError` too, so
             // this one clause covers both routes.
         } catch {
+            guard generation == sessionGeneration else { return }
             errorMessage = "Failed to fetch documents: \(error.localizedDescription)"
         }
     }
@@ -587,6 +700,7 @@ open class PrimitiveAppState: ObservableObject {
 
     public func cleanup() async {
         authManager.detach()
+        signOutSubscription?.cancel()
         statusSubscription?.cancel()
         syncSubscription?.cancel()
         docLoadedSubscription?.cancel()

@@ -119,6 +119,9 @@ public struct AuthGateView<Content: View>: View {
             }
         }
         .onChange(of: authManager.isAuthenticated) { _, authenticated in
+            // Offline mode belongs to the account that was connected: the
+            // next one to sign in waits for its own connection.
+            if !authenticated { hasConnectedOnce = false }
             if authenticated && !appState.isConnected {
                 Task { await appState.connectClient() }
             }

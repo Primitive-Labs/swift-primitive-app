@@ -1360,14 +1360,13 @@ public final class DebugInspector: @unchecked Sendable {
         //    permission table — exactly the "non-cascade" set.
         var directDocIds = Set<String>()
         do {
-            // Owned + shared union, composed inline (the client exposes only
-            // `ownedDocuments` / `sharedDocuments`).
-            async let ownedTask = client.me.ownedDocuments(limit: 500)
-            async let sharedTask = client.me.sharedDocuments(limit: 500)
-            for info in try await ownedTask where !info.documentId.isEmpty {
+            // Owned + shared union, every page of each (the client exposes
+            // only `ownedDocuments` / `sharedDocuments`).
+            let lists = try await DocumentListSource.client(client).readAll()
+            for info in lists.owned where !info.documentId.isEmpty {
                 directDocIds.insert(info.documentId)
             }
-            for share in try await sharedTask.items where !share.document.documentId.isEmpty {
+            for share in lists.shared where !share.document.documentId.isEmpty {
                 directDocIds.insert(share.document.documentId)
             }
         } catch {

@@ -66,7 +66,7 @@ final class PrimitiveLoginViewWaitlistTests: XCTestCase {
     }
 
     /// The server gates a waitlisted address at BOTH ends of the email flow
-    /// (`/auth/otp/request` and `/auth/otp/verify`), so verify lands on the
+    /// (`/auth/email/request` and `/auth/otp/verify`), so verify lands on the
     /// waitlist screen too rather than back on the code field.
     func testAWaitlistedVerifyEntersTheWaitlistState() async throws {
         server.on("/auth/otp/verify", .init(status: 403, json: Self.waitlistBody))
