@@ -333,7 +333,7 @@ Every mutation flows through one dispatcher. Body gets parsed, the dispatcher ho
 | `db/create` | `{ title, databaseType? }` | `client.databases.create(params:)` |
 | `db/rename` | `{ databaseId, title }` | `client.databases.update(databaseId:params:)` |
 | `db/delete` | `{ databaseId }` | `client.databases.delete(databaseId:)` |
-| `db/execute` | `{ databaseId, name, options? }` | `client.databases.executeOperation(databaseId:name:options:)` (CEL-gated) |
+| `db/execute` | `{ databaseId, name, options? }` | `POST /databases/{id}/operations/{name}/execute` through `client.requestJSON` (admin-only route; CEL-gated) |
 | `db/records/query` | `{ databaseId, modelName, filter?, options? }` | `POST /databases/:id/records/query` (manager-or-higher, or an app admin/owner role) |
 | `db/records/create` | `{ databaseId, modelName, data, id? }` | `POST /databases/:id/records/save` (manager-or-higher, or an app admin/owner role) |
 | `db/records/patch` | `{ databaseId, modelName, id, data }` | `POST /databases/:id/records/patch` (manager-or-higher, or an app admin/owner role) |

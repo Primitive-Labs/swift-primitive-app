@@ -876,19 +876,27 @@ public final class DebugInspector: @unchecked Sendable {
                       let name = body["name"] as? String else {
                     return ["ok": false, "error": "databaseId + name required"]
                 }
-                var options: ExecuteOperationOptions?
+                // The client no longer carries an operation execute method
+                // (#3188): the route is admin-only, which a developer running
+                // the inspector as an app owner or admin passes. So the request
+                // goes out raw, with `timing` as the `X-Timing` header the
+                // server reads.
+                var payload: [String: JSONValue] = [:]
+                var requestOptions: RequestOptions?
                 if let o = body["options"] as? [String: Any], !o.isEmpty {
-                    options = ExecuteOperationOptions(
-                        params: inspectorJSONValue(from: o["params"]),
-                        limit: o["limit"] as? Int,
-                        cursor: o["cursor"] as? String,
-                        timing: o["timing"] as? Bool
-                    )
+                    if let params = inspectorJSONValue(from: o["params"]) { payload["params"] = params }
+                    if let limit = o["limit"] as? Int { payload["limit"] = .number(Double(limit)) }
+                    if let cursor = o["cursor"] as? String { payload["cursor"] = .string(cursor) }
+                    if o["timing"] as? Bool == true {
+                        requestOptions = RequestOptions(customHeaders: ["X-Timing": "true"])
+                    }
                 }
-                // `executeOperation` now returns a typed `JSONValue`; project it
-                // back to a JSONSerialization-safe `Any` for the UI.
-                let raw = inspectorAny(try await client.databases.executeOperation(
-                    databaseId: id, name: name, options: options
+                let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? name
+                let raw = inspectorAny(try await client.requestJSON(
+                    method: .post,
+                    path: "/databases/\(id)/operations/\(encodedName)/execute",
+                    body: JSONValue.object(payload),
+                    options: requestOptions
                 ))
                 // Normalize the common "returns rows" shape ({ data: [...] })
                 // vs "returns an array" vs "returns a scalar". The UI renders
@@ -1486,7 +1494,15 @@ public final class DebugInspector: @unchecked Sendable {
     private func listDatabaseOperations(databaseId: String) async -> [String: Any] {
         guard let client, !databaseId.isEmpty else { return [:] }
         do {
-            let items = try await client.databases.listOperations(databaseId: databaseId)
+            // Admin-only route (#3188); raw, like `db/execute`.
+            let value = try await client.requestJSON(
+                method: .get,
+                path: "/databases/\(databaseId)/operations"
+            )
+            let items = try JSONDecoder().decode(
+                [DatabaseOperationInfo].self,
+                from: JSONEncoder().encode(value ?? .array([]))
+            )
             return ["items": items.map { $0.inspectorDict }]
         } catch {
             return ["items": [], "error": error.localizedDescription]
