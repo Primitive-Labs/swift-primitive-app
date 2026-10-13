@@ -1,13 +1,9 @@
 // ==== Databases tab ====
-// Two surfaces, side by side:
-//   1. Models (primary) — direct `records/*` path. Generic CRUD on rows,
-//      bypassing CEL. Server-gated to app admins + db owners, so a
-//      401/403 auto-expands the Operations fallback with a nudge.
-//   2. Registered operations (secondary, collapsible) — the
-//      production path. CEL-gated, app-defined. Anyone with access
-//      to the database can run them.
-// Either path works on its own, so non-owners can still interact
-// with a database via its registered operations.
+// The database list and the models of the selected database, with generic
+// CRUD on their rows through the `records/*` routes. Every `databases/*`
+// route answers an app admin or owner only, so a member sees the server's
+// 403 explained in place: an app's own code reaches its records through a
+// server function.
 
 function databasesTab() {
   return {
@@ -30,16 +26,6 @@ function databasesTab() {
     dbNewRowJson: '',                      // freeform JSON for schemaless models
     dbNewRowError: '',
     dbNewRowSubmitting: false,
-
-    // Registered operations (CEL-gated path)
-    dbOperations: [], dbOperationsError: '',
-    dbOperationsLoading: false,
-    showDbOperations: false,
-    activeOperationName: '',
-    operationRunning: false,
-    operationRows: [],
-    operationResult: null,
-    operationError: '',
 
     // ---- derived ----
     get filteredDatabases() {
@@ -77,7 +63,6 @@ function databasesTab() {
       return out;
     },
     get dbModelColumns()   { return this.columnsFrom(this.dbModelRows); },
-    get operationColumns() { return this.columnsFrom(this.operationRows); },
 
     // ---- database CRUD (the parent entity) ----
     async loadDatabases() {
@@ -99,16 +84,7 @@ function databasesTab() {
       this.dbModelRows = [];
       this.dbRecordError = '';
       this.dbShowNewRowForm = false;
-      this.dbOperations = [];
-      this.dbOperationsError = '';
-      this.activeOperationName = '';
-      this.operationRows = [];
-      this.operationResult = null;
-      this.operationError = '';
-      // Both surfaces load in parallel. Operations stay collapsed unless
-      // the records path fails (loadDbModelRows 403 handler flips it).
       this.loadDbModels();
-      this.loadDbOperations();
     },
     toggleNewDbForm() {
       if (this.showNewDbForm) {
@@ -221,16 +197,13 @@ function databasesTab() {
         this.dbModelRows = Array.isArray(res.rows) ? res.rows : [];
         return;
       }
-      // Auto-expand the operations fallback on permission failures so the
-      // user sees an actionable alternative without hunting for it.
+      // Explain a permission failure in place: the gate is the server's.
       this.dbModelRows = [];
       const status = res.status;
       const isPermError = status === 401 || status === 403;
       if (isPermError) {
-        this.showDbOperations = true;
         this.dbRecordError =
-          'This database\'s raw records can only be browsed by an app admin/owner or a database manager — that\'s the server-side gate on the direct records routes.\n\n'
-          + 'Use the Registered operations section below to run a CEL-gated operation instead.\n\n'
+          'Databases answer an app admin or owner only — that\'s the server-side gate on every databases route. An app\'s own code reaches its records through a server function.\n\n'
           + (res.error ? 'Server said: ' + res.error : '');
       } else {
         this.dbRecordError = res.error || 'failed to load rows';
@@ -314,42 +287,6 @@ function databasesTab() {
         id,
       });
       if (res.ok) await this.loadDbModelRows();
-    },
-
-    // ---- registered operations (CEL-gated path) ----
-    async loadDbOperations() {
-      if (!this.selectedDatabaseId) { this.dbOperations = []; return; }
-      this.dbOperationsLoading = true;
-      try {
-        const r = await fetch('/api/db/operations?databaseId=' + encodeURIComponent(this.selectedDatabaseId), { cache: 'no-store' });
-        const p = await r.json();
-        this.dbOperations = p.items || [];
-        this.dbOperationsError = p.error || '';
-      } catch (e) {
-        this.dbOperations = [];
-        this.dbOperationsError = String(e);
-      } finally {
-        this.dbOperationsLoading = false;
-      }
-    },
-    async runOperation(name) {
-      if (!this.selectedDatabaseId || !name) return;
-      this.activeOperationName = name;
-      this.operationRunning = true;
-      this.operationError = '';
-      this.operationRows = [];
-      this.operationResult = null;
-      const res = await this.doAction('db/execute', {
-        databaseId: this.selectedDatabaseId,
-        name,
-      });
-      if (res.ok) {
-        this.operationRows = Array.isArray(res.rows) ? res.rows : [];
-        this.operationResult = res.result;
-      } else {
-        this.operationError = res.error || 'execution failed';
-      }
-      this.operationRunning = false;
     },
   };
 }

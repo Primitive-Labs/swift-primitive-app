@@ -331,27 +331,10 @@ public final class DebugInspector: @unchecked Sendable {
                     writer.respondJSON(data: body)
                 }
                 return
-            case "/api/db/operations":
-                // List the registered operations for one database. Operations
-                // are app-defined (e.g. `listTasks`, `countByStatus`) that
-                // wrap CEL-gated queries for regular users — the production
-                // path. Coexists with the direct `records/*` path below,
-                // which needs manager-or-higher (or an admin role) and
-                // bypasses CEL.
-                let databaseId = request.query["databaseId"] ?? ""
-                Task { [weak self] in
-                    guard let self else {
-                        writer.respondJSON(data: DebugInspector.emptyJSON)
-                        return
-                    }
-                    let body = await self.jsonBytes { await self.listDatabaseOperations(databaseId: databaseId) }
-                    writer.respondJSON(data: body)
-                }
-                return
             case "/api/db/models":
                 // List every model name the DO has recorded state for. The
-                // server calls this under `records/models`, which is open to
-                // any db member (no CEL gate) — just introspection.
+                // server calls this under `records/models`, which answers an
+                // app admin or owner — just introspection.
                 let databaseId = request.query["databaseId"] ?? ""
                 Task { [weak self] in
                     guard let self else {
@@ -687,24 +670,34 @@ public final class DebugInspector: @unchecked Sendable {
                 _ = try await client.documents.removePermission(documentId: id, .userId(userId))
                 return ["ok": true]
             case "db/create":
-                // Minimum server contract is just `title`; `databaseType`
-                // defaults to `"default"` when the caller doesn't pick one.
+                // The client carries no database member (#3189): the
+                // `databases` routes answer an app admin or owner only, which
+                // a developer running the inspector as one passes, so the
+                // request goes out raw through `requestJSON`. A member gets
+                // the server's 403 back as this action's error. Minimum server
+                // contract is just `title`; `databaseType` defaults to
+                // `"default"` when the caller doesn't pick one.
                 guard let title = (body["title"] as? String), !title.isEmpty else {
                     return ["ok": false, "error": "title required"]
                 }
                 let dbType = (body["databaseType"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "default"
-                let result = try await client.databases.create(
-                    params: CreateDatabaseParams(title: title, databaseType: dbType)
-                )
-                return ["ok": true, "databaseId": result.databaseId, "result": result.inspectorDict]
+                let created = inspectorAny(try await client.requestJSON(
+                    method: .post, path: "/databases",
+                    body: JSONValue.object(["title": .string(title), "databaseType": .string(dbType)])
+                ))
+                let databaseId = (created as? [String: Any])?["databaseId"] as? String ?? ""
+                return ["ok": true, "databaseId": databaseId, "result": created]
             case "db/rename":
                 guard let id = body["databaseId"] as? String,
                       let title = body["title"] as? String else { return ["ok": false, "error": "databaseId + title required"] }
-                _ = try await client.databases.update(databaseId: id, params: UpdateDatabaseParams(title: title))
+                _ = try await client.requestJSON(
+                    method: .patch, path: "/databases/\(id)",
+                    body: JSONValue.object(["title": .string(title)])
+                )
                 return ["ok": true]
             case "db/delete":
                 guard let id = body["databaseId"] as? String else { return ["ok": false, "error": "databaseId required"] }
-                _ = try await client.databases.delete(databaseId: id)
+                _ = try await client.requestJSON(method: .delete, path: "/databases/\(id)")
                 return ["ok": true]
             case "col/create":
                 guard let name = body["name"] as? String, !name.isEmpty else {
@@ -774,9 +767,8 @@ public final class DebugInspector: @unchecked Sendable {
                 return ["ok": true]
             case "db/records/query":
                 // Generic "list rows in a model" path. Uses the direct
-                // `records/*` routes, which require manager-or-higher on the
-                // database or an app admin/owner role server-side — the
-                // debugging door, not the production one. 403s come back
+                // `records/*` routes, which answer an app admin or owner
+                // only — the debugging door, not an app's. 403s come back
                 // through the existing HttpError catch block with the
                 // server's explanation.
                 guard let id = body["databaseId"] as? String,
@@ -866,49 +858,6 @@ public final class DebugInspector: @unchecked Sendable {
                     ])
                 )
                 return ["ok": true]
-            case "db/execute":
-                // Run one named operation against a database and return its
-                // raw result. Operations are defined app-side on the server
-                // (via registerOperation) — the inspector doesn't know which
-                // are safe to re-run, which mutate, or what options they
-                // take; we just pass through and let the caller figure out.
-                guard let id = body["databaseId"] as? String,
-                      let name = body["name"] as? String else {
-                    return ["ok": false, "error": "databaseId + name required"]
-                }
-                // The client no longer carries an operation execute method
-                // (#3188): the route is admin-only, which a developer running
-                // the inspector as an app owner or admin passes. So the request
-                // goes out raw, with `timing` as the `X-Timing` header the
-                // server reads.
-                var payload: [String: JSONValue] = [:]
-                var requestOptions: RequestOptions?
-                if let o = body["options"] as? [String: Any], !o.isEmpty {
-                    if let params = inspectorJSONValue(from: o["params"]) { payload["params"] = params }
-                    if let limit = o["limit"] as? Int { payload["limit"] = .number(Double(limit)) }
-                    if let cursor = o["cursor"] as? String { payload["cursor"] = .string(cursor) }
-                    if o["timing"] as? Bool == true {
-                        requestOptions = RequestOptions(customHeaders: ["X-Timing": "true"])
-                    }
-                }
-                let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? name
-                let raw = inspectorAny(try await client.requestJSON(
-                    method: .post,
-                    path: "/databases/\(id)/operations/\(encodedName)/execute",
-                    body: JSONValue.object(payload),
-                    options: requestOptions
-                ))
-                // Normalize the common "returns rows" shape ({ data: [...] })
-                // vs "returns an array" vs "returns a scalar". The UI renders
-                // `rows` as a table when present; otherwise it falls back to
-                // the raw value under `result`.
-                var rows: [[String: Any]] = []
-                if let dict = raw as? [String: Any], let d = dict["data"] as? [[String: Any]] {
-                    rows = d
-                } else if let arr = raw as? [[String: Any]] {
-                    rows = arr
-                }
-                return ["ok": true, "rows": rows, "result": raw]
             case "record/delete":
                 guard let modelName = body["model"] as? String,
                       let docId = body["documentId"] as? String,
@@ -1483,27 +1432,10 @@ public final class DebugInspector: @unchecked Sendable {
     private func listDatabases() async -> [String: Any] {
         guard let client else { return [:] }
         do {
-            let items = try await client.databases.list()
-            return ["items": items.map { $0.inspectorDict }]
-        } catch {
-            return ["items": [], "error": error.localizedDescription]
-        }
-    }
-
-    @MainActor
-    private func listDatabaseOperations(databaseId: String) async -> [String: Any] {
-        guard let client, !databaseId.isEmpty else { return [:] }
-        do {
-            // Admin-only route (#3188); raw, like `db/execute`.
-            let value = try await client.requestJSON(
-                method: .get,
-                path: "/databases/\(databaseId)/operations"
-            )
-            let items = try JSONDecoder().decode(
-                [DatabaseOperationInfo].self,
-                from: JSONEncoder().encode(value ?? .array([]))
-            )
-            return ["items": items.map { $0.inspectorDict }]
+            // Admin-only route (#3189); raw, like `db/create`.
+            let page = inspectorAny(try await client.requestJSON(method: .get, path: "/databases"))
+            let items = (page as? [String: Any])?["items"] as? [[String: Any]] ?? []
+            return ["items": items]
         } catch {
             return ["items": [], "error": error.localizedDescription]
         }
@@ -1535,10 +1467,16 @@ public final class DebugInspector: @unchecked Sendable {
     private func describeDatabaseModel(databaseId: String, modelName: String) async -> [String: Any] {
         guard let client, !databaseId.isEmpty, !modelName.isEmpty else { return [:] }
         do {
-            let fields = try await client.databases.describe(
-                databaseId: databaseId, modelName: modelName
-            )
-            return ["fields": fields.map { $0.inspectorDict }]
+            // The records route answers `{ fields: [...] }`; each field is
+            // passed through as the server sent it.
+            let encoded = modelName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? modelName
+            let value = inspectorAny(try await client.requestJSON(
+                method: .get,
+                path: "/databases/\(databaseId)/records/describe?modelName=\(encoded)"
+            ))
+            let fields = (value as? [String: Any])?["fields"] as? [[String: Any]]
+                ?? value as? [[String: Any]] ?? []
+            return ["fields": fields]
         } catch {
             return ["fields": [] as [[String: Any]], "error": error.localizedDescription]
         }

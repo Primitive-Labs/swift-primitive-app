@@ -8,7 +8,7 @@ import JsBaoClient
 // `JSONSerialization.data(withJSONObject:)`, which only accepts Foundation
 // value types (String / NSNumber / Array / Dictionary / NSNull). The
 // `JsBaoClient` read APIs now return typed Swift structs (`CollectionInfo`,
-// `DatabaseInfo`, …) instead of the raw dictionaries they used to. These
+// `DocumentPermissionEntry`, …) instead of the raw dictionaries they used to. These
 // `inspectorDict` shims project each typed result back into the plain
 // dictionary shape the inspector UI already understands, so the migration to
 // typed client results is invisible to the HTML/JS layer.
@@ -79,49 +79,6 @@ extension CollectionDocumentInfo {
             "permission": permission?.rawValue,
             "tags": tags,
         ])
-    }
-}
-
-extension DatabaseInfo {
-    var inspectorDict: [String: Any] {
-        compactDict([
-            "databaseId": databaseId,
-            "title": title,
-            "databaseType": databaseType,
-            "permission": permission,
-            "createdBy": createdBy,
-            "createdAt": createdAt,
-            "modifiedAt": modifiedAt,
-        ])
-    }
-}
-
-extension DatabaseOperationInfo {
-    var inspectorDict: [String: Any] {
-        var dict = compactDict([
-            "databaseId": databaseId,
-            "name": name,
-            "type": type.rawValue,
-            "modelName": modelName,
-            "access": access,
-            "createdBy": createdBy,
-            "createdAt": createdAt,
-            "modifiedAt": modifiedAt,
-        ])
-        dict["definition"] = inspectorAny(definition)
-        if params != nil { dict["params"] = inspectorAny(params) }
-        return dict
-    }
-}
-
-extension ModelFieldInfo {
-    var inspectorDict: [String: Any] {
-        [
-            "modelName": modelName,
-            "fieldName": fieldName,
-            "inferredType": inferredType,
-            "firstSeenAt": firstSeenAt,
-        ]
     }
 }
 

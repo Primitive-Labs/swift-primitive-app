@@ -167,12 +167,9 @@ See [Register a test](#register-a-test).
 
 ### Databases
 
-Two-surface view over server-side databases (`/databases/...`). A single left list + detail view on the right with two parallel CRUD paths:
+A view over server-side databases (`/databases/...`): the database list on the left, and the selected database's models and rows on the right, with generic CRUD on rows through `POST /databases/:id/records/{query,save,delete,patch}`.
 
-1. **Models (primary)** — the direct **records** path. Generic CRUD on rows regardless of whether the app developer registered operations. Server-gated to database managers/owners and app admins/owners. The server routes `POST /databases/:id/records/{query,save,delete,patch}` bypass CEL rules — this is the debugging door. If the current user has neither a database grant nor an admin/owner role, the query returns 401/403; the UI auto-expands the **Registered operations** fallback and surfaces a clear explanation.
-2. **Registered operations (secondary, collapsible)** — the **production** path. CEL-gated, app-defined named operations that the app developer registers via `DatabasesAPI.createOperation(databaseId:, params:)`. Anyone with access to the database can execute an operation within its CEL rule. Clicking an operation runs it and renders the result as a table (array of dicts) or raw JSON.
-
-Both paths coexist so any user can interact with any database: admins/owners browse raw via the Models path; everyone else uses the operations path.
+Every `databases/*` route answers an app admin or owner only, so browse as one. A member gets the server's 403, shown in place: an app's own code reaches its records through a server function, not from the client.
 
 Sources: [databases.html](../Sources/PrimitiveApp/Debug/ui/tabs/databases.html), [databases.js](../Sources/PrimitiveApp/Debug/ui/tabs/databases.js). Server wiring: the `db/*` and `db/records/*` cases in [DebugInspector.swift](../Sources/PrimitiveApp/Debug/DebugInspector.swift).
 
@@ -291,7 +288,6 @@ All routes are served by [DebugInspector.route(_:writer:)](../Sources/PrimitiveA
 | `GET` | `/api/databases` | Databases list |
 | `GET` | `/api/db/models?databaseId=…` | Model names stored in the database (DO's `/records/models`) |
 | `GET` | `/api/db/describe?databaseId=…&modelName=…` | Inferred field descriptors for a model |
-| `GET` | `/api/db/operations?databaseId=…` | Registered operations (CEL-gated) |
 | `GET` | `/api/sqlite/store/<name>?limit=…&offset=…` | Raw `kv_store` rows for one store |
 | `GET` | `/api/sqlite/diag` | Disk SQLite resolution diagnostics (see [SQLite (disk)](#sqlite-disk) tab) |
 | `GET` | `/api/memdb` | Catalog of in-memory SQL projections — one entry per model with its tables + row counts |
@@ -330,14 +326,13 @@ Every mutation flows through one dispatcher. Body gets parsed, the dispatcher ho
 | `col/addDoc` / `col/removeDoc` | `{ collectionId, documentId }` | `client.collections.{addDocument,removeDocument}(...)` |
 | `col/grant` / `col/revoke` | `{ collectionId, groupType, groupId, permission? }` | `client.collections.{grantGroupPermission,revokeGroupPermission}(...)` |
 | `col/addMember` / `col/removeMember` | `{ collectionId, userId, permission? }` | `client.collections.{addMember,removeMember}(...)` |
-| `db/create` | `{ title, databaseType? }` | `client.databases.create(params:)` |
-| `db/rename` | `{ databaseId, title }` | `client.databases.update(databaseId:params:)` |
-| `db/delete` | `{ databaseId }` | `client.databases.delete(databaseId:)` |
-| `db/execute` | `{ databaseId, name, options? }` | `POST /databases/{id}/operations/{name}/execute` through `client.requestJSON` (admin-only route; CEL-gated) |
-| `db/records/query` | `{ databaseId, modelName, filter?, options? }` | `POST /databases/:id/records/query` (manager-or-higher, or an app admin/owner role) |
-| `db/records/create` | `{ databaseId, modelName, data, id? }` | `POST /databases/:id/records/save` (manager-or-higher, or an app admin/owner role) |
-| `db/records/patch` | `{ databaseId, modelName, id, data }` | `POST /databases/:id/records/patch` (manager-or-higher, or an app admin/owner role) |
-| `db/records/delete` | `{ databaseId, modelName, id }` | `POST /databases/:id/records/delete` (manager-or-higher, or an app admin/owner role) |
+| `db/create` | `{ title, databaseType? }` | `POST /databases` through `client.requestJSON` (app admin or owner) |
+| `db/rename` | `{ databaseId, title }` | `PATCH /databases/{id}` through `client.requestJSON` (app admin or owner) |
+| `db/delete` | `{ databaseId }` | `DELETE /databases/{id}` through `client.requestJSON` (app admin or owner) |
+| `db/records/query` | `{ databaseId, modelName, filter?, options? }` | `POST /databases/:id/records/query` (app admin or owner) |
+| `db/records/create` | `{ databaseId, modelName, data, id? }` | `POST /databases/:id/records/save` (app admin or owner) |
+| `db/records/patch` | `{ databaseId, modelName, id, data }` | `POST /databases/:id/records/patch` (app admin or owner) |
+| `db/records/delete` | `{ databaseId, modelName, id }` | `POST /databases/:id/records/delete` (app admin or owner) |
 | `memdb/exec` | `{ model, documentId, sql }` | `BaoModelQueryEngine.rawQuery(...)` — server-side reject if the SQL isn't `SELECT`/`PRAGMA`/`WITH` |
 
 ## Extension points
